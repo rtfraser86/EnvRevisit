@@ -138,7 +138,7 @@ export default function CaptureScreen() {
   }
   const physW = sideways ? boxH : boxW;
   const physH = sideways ? boxW : boxH;
-  const physRotate = att.hold === 'cw' ? '-90deg' : att.hold === 'ccw' ? '90deg' : '0deg';
+  const physRotate = att.hold === 'cw' ? '90deg' : att.hold === 'ccw' ? '-90deg' : '0deg';
   const mismatch = !!ref && refShot !== shot;
 
   const target: Target = {
