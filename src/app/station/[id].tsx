@@ -1,8 +1,9 @@
 import { Image } from 'expo-image';
 import { router, Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActionSheetIOS, Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActionSheetIOS, Alert, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
+import { StampEditor, type StampSettings } from '@/components/stamp';
 import { Btn, fmtDate, useColors } from '@/components/ui';
 import {
   deleteCapture,
@@ -10,6 +11,7 @@ import {
   getStation,
   listCaptures,
   setReference,
+  updateCaptureStamp,
   updateStation,
   type Capture,
   type Station,
@@ -23,6 +25,7 @@ export default function StationScreen() {
   const c = useColors();
   const [station, setStation] = useState<Station | null>(null);
   const [caps, setCaps] = useState<Capture[]>([]);
+  const [editing, setEditing] = useState<Capture | null>(null);
 
   const load = useCallback(async () => {
     setStation(await getStation(sid));
@@ -54,9 +57,13 @@ export default function StationScreen() {
     );
 
   const onCaptureMenu = (cap: Capture) => {
-    const options = ['Use as alignment reference', 'Remove from station', 'Cancel'];
+    const options = ['Edit stamp notes', 'Use as alignment reference', 'Remove from station', 'Cancel'];
     const act = async (i: number) => {
       if (i === 0) {
+        setEditing(cap);
+        return;
+      }
+      if (i === 1) {
         await setReference(sid, cap.id);
         // The reference also defines where to stand / which way to look.
         await updateStation(sid, {
@@ -67,7 +74,7 @@ export default function StationScreen() {
           roll: cap.roll ?? station.roll,
           orientation: cap.orientation ?? station.orientation,
         });
-      } else if (i === 1) {
+      } else if (i === 2) {
         await deleteCapture(cap.id);
         deleteCaptureFile(cap);
       }
@@ -75,16 +82,27 @@ export default function StationScreen() {
     };
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
-        { options, destructiveButtonIndex: 1, cancelButtonIndex: 2, title: fmtDate(cap.taken_at) },
+        { options, destructiveButtonIndex: 2, cancelButtonIndex: 3, title: fmtDate(cap.taken_at) },
         act
       );
     } else {
       Alert.alert(fmtDate(cap.taken_at), undefined, [
         { text: options[0], onPress: () => act(0) },
-        { text: options[1], style: 'destructive', onPress: () => act(1) },
+        { text: options[1], onPress: () => act(1) },
+        { text: options[2], style: 'destructive', onPress: () => act(2) },
         { text: 'Cancel', style: 'cancel' },
       ]);
     }
+  };
+
+  const showStamps = (station.show_stamps ?? 1) === 1;
+  const hasStamps = caps.some((x) => x.note1 || x.note2 || x.stamp_date);
+  const saveNotes = async (st: StampSettings) => {
+    if (!editing) return;
+    const on = st.enabled;
+    await updateCaptureStamp(editing.id, on ? st.note1.trim() || null : null, on ? st.note2.trim() || null : null, on && st.showDate);
+    setEditing(null);
+    load();
   };
 
   const remove = () =>
@@ -147,7 +165,14 @@ export default function StationScreen() {
       <View style={styles.grid}>
         {caps.map((cap) => (
           <Pressable key={cap.id} style={styles.cell} onPress={() => router.push({ pathname: '/timeline/[id]', params: { id: String(sid), start: String(cap.id) } })} onLongPress={() => onCaptureMenu(cap)}>
-            <Image source={{ uri: cap.uri }} style={styles.cellImg} contentFit="cover" recyclingKey={cap.uri} />
+            <View>
+              <Image source={{ uri: cap.uri }} style={styles.cellImg} contentFit="cover" recyclingKey={cap.uri} />
+              {showStamps && (cap.note1 || cap.note2) && (
+                <View style={[styles.noteBadge, { backgroundColor: c.accent }]}>
+                  <Text style={{ color: c.accentText, fontSize: 9, fontWeight: '800' }}>✎</Text>
+                </View>
+              )}
+            </View>
             {!!cap.is_reference && (
               <View style={[styles.badge, { backgroundColor: c.accent }]}>
                 <Text style={{ color: c.accentText, fontSize: 9, fontWeight: '800' }}>REF</Text>
@@ -157,10 +182,41 @@ export default function StationScreen() {
           </Pressable>
         ))}
       </View>
-      <Text style={{ color: c.muted, fontSize: 12 }}>Long-press a photo to make it the alignment reference or remove it.</Text>
+      <Text style={{ color: c.muted, fontSize: 12 }}>
+        Long-press a photo to edit its stamp notes, make it the alignment reference, or remove it.
+      </Text>
+      {hasStamps && (
+        <View style={[styles.switchRow, { borderColor: c.line, backgroundColor: c.card }]}>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: c.text, fontWeight: '600' }}>Show stamps on photos</Text>
+            <Text style={{ color: c.muted, fontSize: 12 }}>Notes and dates for the whole sequence. Originals are never altered.</Text>
+          </View>
+          <Switch
+            value={showStamps}
+            onValueChange={async (v) => {
+              await updateStation(sid, { show_stamps: v ? 1 : 0 });
+              load();
+            }}
+          />
+        </View>
+      )}
 
       <Btn title="Export capture log (CSV)" kind="secondary" onPress={() => shareStationCsv(station)} />
       <Btn title="Delete station" kind="ghost" onPress={remove} />
+      {editing && (
+        <StampEditor
+          visible
+          title={`Stamp — ${fmtDate(editing.taken_at)}`}
+          initial={{
+            enabled: !!(editing.note1 || editing.note2 || editing.stamp_date),
+            note1: editing.note1 ?? '',
+            note2: editing.note2 ?? '',
+            showDate: editing.stamp_date ? true : !(editing.note1 || editing.note2),
+          }}
+          onClose={() => setEditing(null)}
+          onSave={saveNotes}
+        />
+      )}
     </ScrollView>
   );
 }
@@ -170,5 +226,7 @@ const styles = StyleSheet.create({
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   cell: { width: '31.5%' },
   cellImg: { width: '100%', aspectRatio: 1, borderRadius: 8 },
+  switchRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: 12, borderWidth: 1 },
+  noteBadge: { position: 'absolute', right: 4, top: 4, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 3 },
   badge: { position: 'absolute', left: 4, top: 4, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 3 },
 });

@@ -88,7 +88,7 @@ const styles = StyleSheet.create({
   chip: {
     position: 'absolute',
     left: 10,
-    bottom: 10,
+    top: 50,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,

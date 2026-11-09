@@ -4,19 +4,28 @@ import * as Haptics from 'expo-haptics';
 import { usePermissions as useMediaPermissions } from 'expo-media-library';
 import { router, useLocalSearchParams } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { useEffect, useRef, useState, type ComponentRef } from 'react';
+import { ActivityIndicator, PixelRatio, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AlignmentGuide, GuideReadout, type Target } from '@/components/alignment-guide';
 import { Slider } from '@/components/slider';
 import { StakeoutChip } from '@/components/stakeout';
+import {
+  DEFAULT_STAMP,
+  StampEditor,
+  StampOverlay,
+  StampSnapshot,
+  snapshotStamp,
+  stampLines,
+  type StampSettings,
+} from '@/components/stamp';
 import { Btn, Pill, useColors } from '@/components/ui';
 import { addCapture, getReference, getStation, kvGet, kvSet, updateStation, type Capture, type Station } from '@/lib/db';
 import { distanceM, formatDistance } from '@/lib/geo';
 import { orientationOf } from '@/lib/library';
 import { shotOf, useAttitude, usePosition } from '@/lib/sensors';
-import { persistCapture } from '@/lib/storage';
+import { persistCapture, saveToPhotosLibrary } from '@/lib/storage';
 
 type Mode = 'blend' | 'split' | 'flicker' | 'off';
 
@@ -39,6 +48,12 @@ export default function CaptureScreen() {
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [lastSaved, setLastSaved] = useState<string | null>(null);
+  const [stamp, setStamp] = useState<StampSettings>(DEFAULT_STAMP);
+  const [editingStamp, setEditingStamp] = useState(false);
+  const [now, setNow] = useState(() => Date.now()); // drives the live date on the stamp preview
+  const [snapJob, setSnapJob] = useState<{ uri: string; w: number; h: number; lines: string[] } | null>(null);
+  const snapView = useRef<ComponentRef<typeof View>>(null);
+  const snapResolve = useRef<((uri: string | null) => void) | null>(null);
   const att = useAttitude(true, 50);
   const { fix } = usePosition(true, true);
 
@@ -46,7 +61,56 @@ export default function CaptureScreen() {
     getStation(sid).then(setStation);
     getReference(sid).then(setRef);
     kvGet('saveToPhotos').then((v) => setSaveToPhotos(v !== '0'));
+    kvGet(`stamp:${sid}`).then((v) => {
+      if (v) {
+        try {
+          setStamp({ ...DEFAULT_STAMP, ...JSON.parse(v) });
+        } catch {}
+      }
+    });
   }, [sid]);
+
+  const saveStamp = (s: StampSettings) => {
+    setStamp(s);
+    kvSet(`stamp:${sid}`, JSON.stringify(s));
+    setEditingStamp(false);
+  };
+
+  /** Render the stamped photo off-screen and snapshot it; resolves null on failure/timeout. */
+  const makeStampedCopy = (uri: string, w: number, h: number, lines: string[]) =>
+    new Promise<string | null>((resolve) => {
+      const t = setTimeout(() => {
+        snapResolve.current = null;
+        setSnapJob(null);
+        resolve(null);
+      }, 10000);
+      snapResolve.current = (u) => {
+        clearTimeout(t);
+        resolve(u);
+      };
+      setSnapJob({ uri, w, h, lines });
+    });
+
+  const onSnapReady = async () => {
+    const done = snapResolve.current;
+    if (!done || !snapView.current) return;
+    snapResolve.current = null;
+    try {
+      // give layout one frame to settle
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+      done(await snapshotStamp(snapView));
+    } catch (e) {
+      console.warn('stamp snapshot failed', e);
+      done(null);
+    } finally {
+      setSnapJob(null);
+    }
+  };
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 15000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     if (mode !== 'flicker') return;
@@ -120,8 +184,18 @@ export default function CaptureScreen() {
       let h = pic.height;
       if ((snapShot === 'landscape') !== w > h) [w, h] = [h, w];
 
-      if (saveToPhotos && !mediaPerm?.granted) await requestMediaPerm();
-      const { fileUri } = await persistCapture(pic.uri, station.id, takenAt, saveToPhotos);
+      // The app keeps a clean original (for alignment / change detection); stamps are an overlay.
+      const fileUri = await persistCapture(pic.uri, station.id, takenAt);
+      const lines = stamp.enabled
+        ? stampLines({ takenAt, note1: stamp.note1, note2: stamp.note2, showDate: stamp.showDate })
+        : [];
+
+      if (saveToPhotos) {
+        if (!mediaPerm?.granted) await requestMediaPerm();
+        // Photos gets the stamped copy when a stamp is on (like a field-stamp camera).
+        const stamped = lines.length ? await makeStampedCopy(fileUri, w, h, lines) : null;
+        await saveToPhotosLibrary(stamped ?? fileUri);
+      }
 
       await addCapture({
         station_id: station.id,
@@ -137,6 +211,9 @@ export default function CaptureScreen() {
         width: w,
         height: h,
         orientation: snapShot,
+        note1: stamp.enabled ? stamp.note1.trim() || null : null,
+        note2: stamp.enabled ? stamp.note2.trim() || null : null,
+        stamp_date: stamp.enabled && stamp.showDate ? 1 : 0,
         is_reference: 0,
       });
 
@@ -250,6 +327,12 @@ export default function CaptureScreen() {
 
             <AlignmentGuide width={physW} height={physH} att={att} target={target} />
             <GuideReadout att={att} target={target} />
+            {stamp.enabled && (
+              <StampOverlay
+                lines={stampLines({ takenAt: now, note1: stamp.note1, note2: stamp.note2, showDate: stamp.showDate })}
+                frameWidth={physW}
+              />
+            )}
             <StakeoutChip
               fix={fix}
               target={station ? { latitude: station.lat, longitude: station.lon } : null}
@@ -277,6 +360,7 @@ export default function CaptureScreen() {
 
       <View style={{ paddingBottom: Math.max(insets.bottom, 12) }}>
         <View style={styles.modes}>
+          <Pill label={stamp.enabled ? '✎ Stamp on' : '✎ Stamp'} active={stamp.enabled} onPress={() => setEditingStamp(true)} />
           {(['blend', 'split', 'flicker', 'off'] as Mode[]).map((m) => (
             <Pill key={m} label={m[0].toUpperCase() + m.slice(1)} active={mode === m} onPress={() => setMode(m)} />
           ))}
@@ -311,6 +395,20 @@ export default function CaptureScreen() {
           </Pressable>
         </View>
       </View>
+
+      {snapJob && (
+        <StampSnapshot
+          viewRef={snapView}
+          uri={snapJob.uri}
+          widthPt={snapJob.w / PixelRatio.get()}
+          heightPt={snapJob.h / PixelRatio.get()}
+          lines={snapJob.lines}
+          onReady={onSnapReady}
+        />
+      )}
+      {editingStamp && (
+        <StampEditor visible initial={stamp} onClose={() => setEditingStamp(false)} onSave={saveStamp} />
+      )}
     </View>
   );
 }
@@ -359,7 +457,7 @@ const styles = StyleSheet.create({
   },
   mismatch: {
     position: 'absolute',
-    top: 56,
+    top: 112,
     left: 10,
     right: 10,
     padding: 8,

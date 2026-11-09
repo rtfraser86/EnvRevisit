@@ -37,9 +37,16 @@ Edit any file in `src/` and the app reloads on the phone.
 | **Map** (`src/app/index.tsx`) | Indexes geotagged photos (incremental after the first scan), clusters them on a satellite map, shows stations as green diamonds. When you're within 150 m of earlier photos it zooms to them and lists them, nearest first. |
 | **Photo** | Shows date, position, GPS accuracy and camera heading read from EXIF. "Revisit this spot" creates a station with that photo as the reference. |
 | **Station** | The time series. Long-press a photo to make it the alignment reference or remove it. "+ Add older photos" pulls in other camera-roll shots taken within 15–250 m. Exports a CSV capture log. |
-| **Navigate** | Live distance and bearing arrow (hold the phone flat), satellite mini-map, haptic buzz once you're inside the GPS error circle. "Directions in Maps" for anything over 500 m. |
-| **Capture** | Camera framed to the reference's aspect ratio, with the old photo as a ghost: **Blend** (opacity slider), **Split** (drag divider), **Flicker**, **Off**. A target ring shows where the reference view's centre is — move until it covers the cross. Readouts say "Turn right 4°", "Tilt up 2°", "Level ✓". Thirds grid toggle. |
+| **Navigate** | Stake-out style: north-up satellite map with an arrow at your position always pointing to the photo point, a dashed line to it, a green circle showing the GPS "on the point" radius, and a HUD with distance, bearing and N/E offsets. Below the map, a compass-relative arrow with "x m ahead · y m left". Haptic buzz when you're on the point. Pan the map to stop auto-follow; tap Re-centre to resume. |
+| **Capture** | Camera framed to the reference's aspect ratio, with the old photo as a ghost: **Blend** (opacity slider), **Split** (drag divider), **Flicker**, **Off**. A target ring shows where the reference view's centre is — move until it covers the cross. Readouts say "Turn right 4°", "Tilt up 2°", "Level ✓". A stake-out chip shows distance and "x m ahead · y m left" relative to where the camera points, so you can fine-tune your position. **✎ Stamp** adds two note lines and/or the date. |
 | **Timeline** | **Swipe** between dates, **Scrub** a slider that cross-fades through the whole series, or **Compare** any two dates with a divider. |
+
+### Stamps (notes + date)
+- Tap **✎ Stamp** on the camera screen to turn stamping on, type up to two note lines and choose whether to show the date and time. Settings are remembered per station.
+- The app keeps every photo **clean** and stores the notes as data, so alignment and change detection aren't affected. Stamps are drawn as an overlay.
+- When "Also saving to Photos" is on, the copy saved to Photos **has the stamp burnt in**, like a field-stamp camera app.
+- On a station, long-press any photo to add or edit its notes (camera-roll photos too). The **Show stamps on photos** switch turns stamps on or off for the whole sequence, and so does the **Stamps** pill in the Timeline.
+- Notes are included in the CSV export.
 
 ### Where the guidance numbers come from
 - **Position**: phone GPS, about ±3–5 m at best. Final alignment is visual (the ghost).

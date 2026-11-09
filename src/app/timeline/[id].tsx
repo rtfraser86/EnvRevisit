@@ -4,8 +4,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 
 import { Slider } from '@/components/slider';
+import { StampOverlay, stampLines } from '@/components/stamp';
 import { Pill, fmtDate, fmtDateTime, useColors } from '@/components/ui';
-import { getStation, listCaptures, type Capture, type Station } from '@/lib/db';
+import { getStation, listCaptures, updateStation, type Capture, type Station } from '@/lib/db';
 
 type Mode = 'swipe' | 'scrub' | 'compare';
 
@@ -57,6 +58,22 @@ export default function Timeline() {
 
   if (!caps.length) return <View style={{ flex: 1, backgroundColor: c.bg }} />;
 
+  const showStamps = (station?.show_stamps ?? 1) === 1;
+  const hasStamps = caps.some((x) => x.note1 || x.note2 || x.stamp_date);
+  const toggleStamps = async () => {
+    if (!station) return;
+    const v = showStamps ? 0 : 1;
+    await updateStation(station.id, { show_stamps: v });
+    setStation({ ...station, show_stamps: v });
+  };
+  const stampFor = (cap: Capture) =>
+    showStamps ? (
+      <StampOverlay
+        lines={stampLines({ takenAt: cap.taken_at, note1: cap.note1, note2: cap.note2, showDate: !!cap.stamp_date })}
+        frameWidth={frameW}
+      />
+    ) : null;
+
   const img = (uri: string, opacity = 1) => (
     <Image
       source={{ uri }}
@@ -74,6 +91,7 @@ export default function Timeline() {
         <Pill label="Swipe" active={mode === 'swipe'} onPress={() => setMode('swipe')} />
         <Pill label="Scrub" active={mode === 'scrub'} onPress={() => setMode('scrub')} />
         <Pill label="Compare" active={mode === 'compare'} onPress={() => setMode('compare')} />
+        {hasStamps && <Pill label={showStamps ? 'Stamps on' : 'Stamps off'} active={showStamps} onPress={toggleStamps} />}
       </View>
 
       <View style={{ alignItems: 'center' }}>
@@ -90,7 +108,10 @@ export default function Timeline() {
             onMomentumScrollEnd={(e) => setIndex(Math.round(e.nativeEvent.contentOffset.x / winW))}
             renderItem={({ item }) => (
               <View style={{ width: winW, alignItems: 'center' }}>
-                <View style={{ width: frameW, height: frameH }}>{img(item.uri)}</View>
+                <View style={{ width: frameW, height: frameH }}>
+                  {img(item.uri)}
+                  {stampFor(item)}
+                </View>
               </View>
             )}
           />
@@ -100,6 +121,7 @@ export default function Timeline() {
           <View style={{ width: frameW, height: frameH }}>
             {img(caps[lo].uri)}
             {hi !== lo && img(caps[hi].uri, frac)}
+            {stampFor(caps[frac < 0.5 ? lo : hi])}
           </View>
         )}
 

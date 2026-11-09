@@ -26,6 +26,7 @@ export type Station = {
   pitch: number | null; // camera elevation, degrees (+ up)
   roll: number | null; // horizon tilt relative to the shot's frame, degrees (+ clockwise)
   orientation: 'portrait' | 'landscape' | null;
+  show_stamps?: number; // 0/1 — show note/date stamps over this station's photos
   notes: string | null;
   created: number;
 };
@@ -45,6 +46,9 @@ export type Capture = {
   width: number | null;
   height: number | null;
   orientation: 'portrait' | 'landscape' | null;
+  note1?: string | null;
+  note2?: string | null;
+  stamp_date?: number; // 0/1
   is_reference: number; // 0/1
 };
 
@@ -98,11 +102,21 @@ export function getDb() {
         );
         CREATE INDEX IF NOT EXISTS captures_station ON captures(station_id, taken_at);
       `);
-      // v0.2: how the phone was held for the shot ('portrait' | 'landscape').
-      for (const table of ['stations', 'captures']) {
+      // Additive migrations.
+      const addCols: [string, string, string][] = [
+        // v0.2: how the phone was held for the shot ('portrait' | 'landscape')
+        ['stations', 'orientation', 'TEXT'],
+        ['captures', 'orientation', 'TEXT'],
+        // v0.3: stamp notes (shown as an overlay; originals stay clean)
+        ['captures', 'note1', 'TEXT'],
+        ['captures', 'note2', 'TEXT'],
+        ['captures', 'stamp_date', 'INTEGER NOT NULL DEFAULT 0'],
+        ['stations', 'show_stamps', 'INTEGER NOT NULL DEFAULT 1'],
+      ];
+      for (const [table, col, type] of addCols) {
         const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
-        if (!cols.some((c) => c.name === 'orientation')) {
-          await db.execAsync(`ALTER TABLE ${table} ADD COLUMN orientation TEXT`);
+        if (!cols.some((c) => c.name === col)) {
+          await db.execAsync(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
         }
       }
       return db;
@@ -198,10 +212,11 @@ export async function listStations(): Promise<StationWithStats[]> {
 export async function addCapture(c: Omit<Capture, 'id'>): Promise<number> {
   const db = await getDb();
   const r = await db.runAsync(
-    `INSERT INTO captures (station_id, uri, source, taken_at, lat, lon, accuracy, heading, pitch, roll, width, height, orientation, is_reference)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO captures (station_id, uri, source, taken_at, lat, lon, accuracy, heading, pitch, roll, width, height, orientation, note1, note2, stamp_date, is_reference)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     c.station_id, c.uri, c.source, c.taken_at, c.lat, c.lon, c.accuracy,
-    c.heading, c.pitch, c.roll, c.width, c.height, c.orientation, c.is_reference
+    c.heading, c.pitch, c.roll, c.width, c.height, c.orientation,
+    c.note1 ?? null, c.note2 ?? null, c.stamp_date ?? 0, c.is_reference
   );
   return r.lastInsertRowId;
 }
@@ -237,4 +252,12 @@ export async function stationIdsForAsset(assetId: string): Promise<number[]> {
     assetId
   );
   return rows.map((r) => r.station_id);
+}
+
+export async function updateCaptureStamp(id: number, note1: string | null, note2: string | null, stampDate: boolean) {
+  const db = await getDb();
+  await db.runAsync(
+    'UPDATE captures SET note1 = ?, note2 = ?, stamp_date = ? WHERE id = ?',
+    note1, note2, stampDate ? 1 : 0, id
+  );
 }
