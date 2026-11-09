@@ -38,11 +38,14 @@ export async function saveToPhotosLibrary(uri: string): Promise<string | null> {
 }
 
 export function deleteCaptureFile(c: Capture) {
-  if (c.source !== 'app' || !c.uri.startsWith('file:')) return;
-  try {
-    const f = new File(c.uri);
-    if (f.exists) f.delete();
-  } catch {}
+  const uris = [c.aligned_uri, c.source === 'app' && c.uri.startsWith('file:') ? c.uri : null];
+  for (const u of uris) {
+    if (!u) continue;
+    try {
+      const f = new File(u);
+      if (f.exists) f.delete();
+    } catch {}
+  }
 }
 
 const iso = (ms: number | null) => (ms ? new Date(ms).toISOString() : '');

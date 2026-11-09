@@ -22,6 +22,7 @@ import {
 } from '@/components/stamp';
 import { Btn, Pill, useColors } from '@/components/ui';
 import { addCapture, getReference, getStation, kvGet, kvSet, updateStation, type Capture, type Station } from '@/lib/db';
+import { alignCapture, alignmentAvailable } from '@/lib/align';
 import { distanceM, formatDistance } from '@/lib/geo';
 import { orientationOf } from '@/lib/library';
 import { shotOf, useAttitude, usePosition } from '@/lib/sensors';
@@ -197,7 +198,7 @@ export default function CaptureScreen() {
         await saveToPhotosLibrary(stamped ?? fileUri);
       }
 
-      await addCapture({
+      const newId = await addCapture({
         station_id: station.id,
         uri: fileUri,
         source: 'app',
@@ -232,6 +233,8 @@ export default function CaptureScreen() {
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setLastSaved(fileUri);
+      // Register to the reference in the background (EnvRevisit build only).
+      if (alignmentAvailable) alignCapture(station.id, newId).catch((e) => console.warn('align', e));
     } catch (e) {
       console.warn(e);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);

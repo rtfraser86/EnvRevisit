@@ -49,6 +49,9 @@ export type Capture = {
   note1?: string | null;
   note2?: string | null;
   stamp_date?: number; // 0/1
+  aligned_uri?: string | null; // copy warped into the reference frame
+  align_status?: 'ok' | 'failed' | null;
+  align_inliers?: number | null;
   is_reference: number; // 0/1
 };
 
@@ -112,6 +115,10 @@ export function getDb() {
         ['captures', 'note2', 'TEXT'],
         ['captures', 'stamp_date', 'INTEGER NOT NULL DEFAULT 0'],
         ['stations', 'show_stamps', 'INTEGER NOT NULL DEFAULT 1'],
+        // v0.4: automatic registration to the reference photo
+        ['captures', 'aligned_uri', 'TEXT'],
+        ['captures', 'align_status', 'TEXT'],
+        ['captures', 'align_inliers', 'INTEGER'],
       ];
       for (const [table, col, type] of addCols) {
         const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
@@ -259,5 +266,18 @@ export async function updateCaptureStamp(id: number, note1: string | null, note2
   await db.runAsync(
     'UPDATE captures SET note1 = ?, note2 = ?, stamp_date = ? WHERE id = ?',
     note1, note2, stampDate ? 1 : 0, id
+  );
+}
+
+export async function setAlignment(
+  id: number,
+  alignedUri: string | null,
+  status: 'ok' | 'failed' | null,
+  inliers: number | null
+) {
+  const db = await getDb();
+  await db.runAsync(
+    'UPDATE captures SET aligned_uri = ?, align_status = ?, align_inliers = ? WHERE id = ?',
+    alignedUri, status, inliers, id
   );
 }

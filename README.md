@@ -70,43 +70,45 @@ All data stays on the phone in SQLite (`revisit.db`). Tables: `photos` (camera-r
 ---
 
 ## Known limits of this build
+- Automatic alignment needs the EnvRevisit build (see below), not Expo Go.
 - On-screen buttons stay in portrait position when you turn the phone sideways (the overlays rotate; the controls don't).
 - **Lens**: the camera opens at 1×. A reference shot at 0.5× or 2× won't line up yet.
-- **No automatic image alignment yet.** The timeline shows photos as captured (see Stage 3).
 - iCloud-only originals may be slow to appear the first time.
 
 ---
 
-## Roadmap
+## Automatic alignment (EnvRevisit build only)
+Every photo in a station is registered to the station's reference photo: ORB features (OpenCV), ratio-tested Hamming matches, a RANSAC homography (pure JS, `src/lib/homography.ts`) and an OpenCV `warpPerspective` into the reference frame (long side 2048 px). Originals are untouched; aligned copies live in the app's `aligned/` folder.
+- New photos taken in the app are aligned automatically right after you shoot.
+- **Station → Automatic alignment → Align / Re-align** processes the whole sequence (e.g. older camera-roll photos). Changing the reference re-aligns everything.
+- Green ⇄ badge = aligned, orange ! = couldn't align (too different: viewpoint, season, light or lens).
+- **Timeline → Aligned / As shot** switches between registered and original photos.
+- Not available in Expo Go. The rest of the app still runs there.
 
-**Stage 3 — automatic registration (needs a development build)**
-OpenCV via `react-native-fast-opencv`: ORB/AKAZE features → RANSAC homography to the reference → optional ECC refinement → warped, cropped copies stored next to each capture, so the timeline swiper is pixel-aligned.
-
-**Stage 4 — live alignment guidance**
-Feature-matching the live camera frame against the reference (VisionCamera frame processor) to drive "step left 0.5 m / closer", not just angles. This is the part no existing app does.
-
-**Stage 5 — export**
-A zip per station (originals + aligned + JSON/CSV) ready for change-detection scripts. Also lens/zoom matching.
-
-### Moving to a development build (Stage 3+)
-OpenCV and VisionCamera aren't inside Expo Go, so the app needs its own build:
-1. Join the Apple Developer Program (about A$149/yr).
-2. Create an Expo account and log in:
-   ```powershell
+## Building the EnvRevisit app (development build)
+Needs the Apple Developer Program and your Expo account. All from the PC, in the project folder:
+1. Log in to EAS (your `EXPO_TOKEN` also works):
+   ```
    npx eas-cli@latest login
    ```
-3. Add the dev client and register your iPhone:
-   ```powershell
-   npx expo install expo-dev-client
+2. Register your iPhone (open the link it shows on the phone and install the profile):
+   ```
    npx eas-cli@latest device:create
    ```
-4. Build in Expo's cloud (signing is handled for you) and install the result on the phone from the link EAS gives you:
-   ```powershell
+3. Build in Expo's cloud (asks for your Apple ID the first time; takes ~15–25 min):
+   ```
    npx eas-cli@latest build --profile development --platform ios
    ```
-5. From then on, `npx expo start --dev-client` works like Expo Go, but with native modules.
+   The first run asks to create an EAS project. Say yes. It adds a `projectId` to `app.json`, which you should commit and push, or send to Claude.
+4. Open the link from the build on the iPhone to install **EnvRevisit**. On iOS 16+ also turn on **Settings → Privacy & Security → Developer Mode** and restart when asked.
+5. From then on start the server with:
+   ```
+   npx expo start --dev-client
+   ```
+   and open the project from inside the EnvRevisit app (or scan the QR code). JavaScript changes reload live. Only adding new native libraries needs another build.
 
----
+## Roadmap
+**Next:** live image matching while lining up ("step left 0.4 m / closer" from the camera feed), lens matching (0.5×/2×), app icon, zip export of a station (originals + aligned + CSV).
 
 ## Project layout
 ```

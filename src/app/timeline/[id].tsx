@@ -18,6 +18,7 @@ export default function Timeline() {
   const [station, setStation] = useState<Station | null>(null);
   const [caps, setCaps] = useState<Capture[]>([]);
   const [mode, setMode] = useState<Mode>('swipe');
+  const [useAligned, setUseAligned] = useState(true);
   const [index, setIndex] = useState(0);
   const [scrub, setScrub] = useState(0); // 0..1 across the whole series
   const [split, setSplit] = useState(0.5);
@@ -74,6 +75,8 @@ export default function Timeline() {
       />
     ) : null;
 
+  const hasAligned = caps.some((x) => x.align_status === 'ok' && !x.is_reference);
+  const pick = (cap: Capture) => (useAligned && cap.aligned_uri ? cap.aligned_uri : cap.uri);
   const img = (uri: string, opacity = 1) => (
     <Image
       source={{ uri }}
@@ -91,6 +94,9 @@ export default function Timeline() {
         <Pill label="Swipe" active={mode === 'swipe'} onPress={() => setMode('swipe')} />
         <Pill label="Scrub" active={mode === 'scrub'} onPress={() => setMode('scrub')} />
         <Pill label="Compare" active={mode === 'compare'} onPress={() => setMode('compare')} />
+        {hasAligned && (
+          <Pill label={useAligned ? 'Aligned' : 'As shot'} active={useAligned} onPress={() => setUseAligned((v) => !v)} />
+        )}
         {hasStamps && <Pill label={showStamps ? 'Stamps on' : 'Stamps off'} active={showStamps} onPress={toggleStamps} />}
       </View>
 
@@ -109,7 +115,7 @@ export default function Timeline() {
             renderItem={({ item }) => (
               <View style={{ width: winW, alignItems: 'center' }}>
                 <View style={{ width: frameW, height: frameH }}>
-                  {img(item.uri)}
+                  {img(pick(item))}
                   {stampFor(item)}
                 </View>
               </View>
@@ -119,17 +125,17 @@ export default function Timeline() {
 
         {mode === 'scrub' && (
           <View style={{ width: frameW, height: frameH }}>
-            {img(caps[lo].uri)}
-            {hi !== lo && img(caps[hi].uri, frac)}
+            {img(pick(caps[lo]))}
+            {hi !== lo && img(pick(caps[hi]), frac)}
             {stampFor(caps[frac < 0.5 ? lo : hi])}
           </View>
         )}
 
         {mode === 'compare' && (
           <View style={{ width: frameW, height: frameH }}>
-            {img(caps[b].uri)}
+            {img(pick(caps[b]))}
             <View style={[StyleSheet.absoluteFill, { right: undefined, width: frameW * split, overflow: 'hidden' }]}>
-              <Image source={{ uri: caps[a].uri }} style={{ width: frameW, height: frameH }} contentFit="cover" transition={0} />
+              <Image source={{ uri: pick(caps[a]) }} style={{ width: frameW, height: frameH }} contentFit="cover" transition={0} />
             </View>
             <View style={[styles.divider, { left: frameW * split - 1 }]} />
             <Text style={[styles.tag, { left: 8 }]}>{fmtDate(caps[a].taken_at)}</Text>
@@ -192,7 +198,9 @@ export default function Timeline() {
           })}
         </ScrollView>
         <Text style={{ color: c.muted, fontSize: 12 }}>
-          Photos are shown as captured. Automatic image registration (fine alignment) comes in the next build stage.
+          {hasAligned
+            ? 'Aligned shows each photo warped onto the reference view. Black edges are areas the later photo did not cover.'
+            : 'Photos are shown as captured. Use Align on the station screen (EnvRevisit build) to register them to the reference.'}
         </Text>
       </ScrollView>
     </View>

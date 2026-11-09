@@ -16,6 +16,7 @@ import {
   type Capture,
   type Station,
 } from '@/lib/db';
+import { alignmentAvailable, alignStation, type AlignProgress } from '@/lib/align';
 import { compassPoint } from '@/lib/geo';
 import { deleteCaptureFile, shareStationCsv } from '@/lib/storage';
 
@@ -26,6 +27,7 @@ export default function StationScreen() {
   const [station, setStation] = useState<Station | null>(null);
   const [caps, setCaps] = useState<Capture[]>([]);
   const [editing, setEditing] = useState<Capture | null>(null);
+  const [aligning, setAligning] = useState<AlignProgress | null>(null);
 
   const load = useCallback(async () => {
     setStation(await getStation(sid));
@@ -74,6 +76,12 @@ export default function StationScreen() {
           roll: cap.roll ?? station.roll,
           orientation: cap.orientation ?? station.orientation,
         });
+        // Everything has to be re-registered to the new reference.
+        if (alignmentAvailable) {
+          load();
+          runAlign();
+          return;
+        }
       } else if (i === 2) {
         await deleteCapture(cap.id);
         deleteCaptureFile(cap);
@@ -104,6 +112,28 @@ export default function StationScreen() {
     setEditing(null);
     load();
   };
+
+  async function runAlign() {
+    if (aligning) return;
+    setAligning({ done: 0, total: caps.length, ok: 0, failed: 0 });
+    try {
+      const res = await alignStation(sid, setAligning);
+      if (res.failed) {
+        Alert.alert(
+          'Alignment finished',
+          `${res.ok} aligned, ${res.failed} couldn't be aligned. Those usually differ too much from the reference (very different viewpoint, season, light or lens).`
+        );
+      }
+    } catch (e) {
+      Alert.alert('Alignment failed', String(e));
+    } finally {
+      setAligning(null);
+      load();
+    }
+  }
+
+  const nAligned = caps.filter((x) => x.align_status === 'ok').length;
+  const nFailed = caps.filter((x) => x.align_status === 'failed').length;
 
   const remove = () =>
     Alert.alert('Delete station?', 'Photos in your camera roll are not deleted. Photos taken in EnvRevisit are kept in Photos if you saved them there.', [
@@ -167,6 +197,11 @@ export default function StationScreen() {
           <Pressable key={cap.id} style={styles.cell} onPress={() => router.push({ pathname: '/timeline/[id]', params: { id: String(sid), start: String(cap.id) } })} onLongPress={() => onCaptureMenu(cap)}>
             <View>
               <Image source={{ uri: cap.uri }} style={styles.cellImg} contentFit="cover" recyclingKey={cap.uri} />
+              {cap.align_status && !cap.is_reference && (
+                <View style={[styles.alignBadge, { backgroundColor: cap.align_status === 'ok' ? c.good : c.warn }]}>
+                  <Text style={{ color: '#fff', fontSize: 9, fontWeight: '800' }}>{cap.align_status === 'ok' ? '⇄' : '!'}</Text>
+                </View>
+              )}
               {showStamps && (cap.note1 || cap.note2) && (
                 <View style={[styles.noteBadge, { backgroundColor: c.accent }]}>
                   <Text style={{ color: c.accentText, fontSize: 9, fontWeight: '800' }}>✎</Text>
@@ -201,6 +236,24 @@ export default function StationScreen() {
         </View>
       )}
 
+      <View style={[styles.switchRow, { borderColor: c.line, backgroundColor: c.card }]}>
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: c.text, fontWeight: '600' }}>Automatic alignment</Text>
+          <Text style={{ color: c.muted, fontSize: 12 }}>
+            {!alignmentAvailable
+              ? 'Needs the EnvRevisit app build — not available in Expo Go.'
+              : aligning
+                ? `Aligning… ${aligning.done} / ${aligning.total}`
+                : `${nAligned} of ${caps.length} aligned to the reference${nFailed ? ` · ${nFailed} couldn't be aligned` : ''}`}
+          </Text>
+        </View>
+        <Btn
+          small
+          title={aligning ? '…' : nAligned ? 'Re-align' : 'Align'}
+          disabled={!alignmentAvailable || !!aligning || caps.length < 2}
+          onPress={runAlign}
+        />
+      </View>
       <Btn title="Export capture log (CSV)" kind="secondary" onPress={() => shareStationCsv(station)} />
       <Btn title="Delete station" kind="ghost" onPress={remove} />
       {editing && (
@@ -227,6 +280,7 @@ const styles = StyleSheet.create({
   cell: { width: '31.5%' },
   cellImg: { width: '100%', aspectRatio: 1, borderRadius: 8 },
   switchRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: 12, borderWidth: 1 },
+  alignBadge: { position: 'absolute', left: 4, bottom: 4, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 3 },
   noteBadge: { position: 'absolute', right: 4, top: 4, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 3 },
   badge: { position: 'absolute', left: 4, top: 4, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 3 },
 });
