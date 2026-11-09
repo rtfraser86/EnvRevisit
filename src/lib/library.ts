@@ -118,9 +118,15 @@ export async function readPose(assetId: string): Promise<PhotoPose> {
     if (typeof comment === 'string' && comment.startsWith('{')) {
       try {
         const j = JSON.parse(comment);
-        if (j && j.app === 'revisit') pose.attitude = j;
+        if (j && (j.app === 'envrevisit' || j.app === 'revisit')) pose.attitude = j;
       } catch {}
     }
   } catch {}
   return pose;
+}
+
+/** Portrait vs landscape from (displayed) pixel dimensions. */
+export function orientationOf(w: number | null, h: number | null): 'portrait' | 'landscape' | null {
+  if (!w || !h) return null;
+  return w > h ? 'landscape' : 'portrait';
 }

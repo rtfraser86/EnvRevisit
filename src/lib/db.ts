@@ -24,7 +24,8 @@ export type Station = {
   lon: number;
   heading: number | null; // camera bearing, degrees true
   pitch: number | null; // camera elevation, degrees (+ up)
-  roll: number | null; // horizon tilt, degrees (+ clockwise)
+  roll: number | null; // horizon tilt relative to the shot's frame, degrees (+ clockwise)
+  orientation: 'portrait' | 'landscape' | null;
   notes: string | null;
   created: number;
 };
@@ -43,6 +44,7 @@ export type Capture = {
   roll: number | null;
   width: number | null;
   height: number | null;
+  orientation: 'portrait' | 'landscape' | null;
   is_reference: number; // 0/1
 };
 
@@ -96,6 +98,13 @@ export function getDb() {
         );
         CREATE INDEX IF NOT EXISTS captures_station ON captures(station_id, taken_at);
       `);
+      // v0.2: how the phone was held for the shot ('portrait' | 'landscape').
+      for (const table of ['stations', 'captures']) {
+        const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
+        if (!cols.some((c) => c.name === 'orientation')) {
+          await db.execAsync(`ALTER TABLE ${table} ADD COLUMN orientation TEXT`);
+        }
+      }
       return db;
     })();
   }
@@ -150,8 +159,8 @@ export async function clearPhotos() {
 export async function createStation(s: Omit<Station, 'id' | 'created'>): Promise<number> {
   const db = await getDb();
   const r = await db.runAsync(
-    'INSERT INTO stations (name, lat, lon, heading, pitch, roll, notes, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    s.name, s.lat, s.lon, s.heading, s.pitch, s.roll, s.notes, Date.now()
+    'INSERT INTO stations (name, lat, lon, heading, pitch, roll, orientation, notes, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    s.name, s.lat, s.lon, s.heading, s.pitch, s.roll, s.orientation, s.notes, Date.now()
   );
   return r.lastInsertRowId;
 }
@@ -189,10 +198,10 @@ export async function listStations(): Promise<StationWithStats[]> {
 export async function addCapture(c: Omit<Capture, 'id'>): Promise<number> {
   const db = await getDb();
   const r = await db.runAsync(
-    `INSERT INTO captures (station_id, uri, source, taken_at, lat, lon, accuracy, heading, pitch, roll, width, height, is_reference)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO captures (station_id, uri, source, taken_at, lat, lon, accuracy, heading, pitch, roll, width, height, orientation, is_reference)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     c.station_id, c.uri, c.source, c.taken_at, c.lat, c.lon, c.accuracy,
-    c.heading, c.pitch, c.roll, c.width, c.height, c.is_reference
+    c.heading, c.pitch, c.roll, c.width, c.height, c.orientation, c.is_reference
   );
   return r.lastInsertRowId;
 }

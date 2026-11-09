@@ -65,6 +65,7 @@ export default function StationScreen() {
           heading: cap.heading ?? station.heading,
           pitch: cap.pitch ?? station.pitch,
           roll: cap.roll ?? station.roll,
+          orientation: cap.orientation ?? station.orientation,
         });
       } else if (i === 1) {
         await deleteCapture(cap.id);
@@ -87,7 +88,7 @@ export default function StationScreen() {
   };
 
   const remove = () =>
-    Alert.alert('Delete station?', 'Photos in your camera roll are not deleted. Photos taken in Revisit are kept in Photos if you saved them there.', [
+    Alert.alert('Delete station?', 'Photos in your camera roll are not deleted. Photos taken in EnvRevisit are kept in Photos if you saved them there.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',

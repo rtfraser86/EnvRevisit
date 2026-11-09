@@ -6,7 +6,7 @@ import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from 'react-nati
 import { Btn, fmtDateTime, useColors } from '@/components/ui';
 import { addCapture, createStation, getPhoto, stationIdsForAsset, type PhotoRow } from '@/lib/db';
 import { compassPoint } from '@/lib/geo';
-import { readPose, type PhotoPose } from '@/lib/library';
+import { orientationOf, readPose, type PhotoPose } from '@/lib/library';
 
 export default function PhotoScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -35,6 +35,7 @@ export default function PhotoScreen() {
         heading: pose?.attitude?.heading ?? pose?.heading ?? null,
         pitch: pose?.attitude?.pitch ?? null,
         roll: pose?.attitude?.roll ?? null,
+        orientation: orientationOf(photo.width, photo.height),
         notes: null,
       });
       await addCapture({
@@ -50,6 +51,7 @@ export default function PhotoScreen() {
         roll: pose?.attitude?.roll ?? null,
         width: photo.width,
         height: photo.height,
+        orientation: orientationOf(photo.width, photo.height),
         is_reference: 1,
       });
       router.replace(thenNavigate ? `/navigate/${sid}` : `/station/${sid}`);

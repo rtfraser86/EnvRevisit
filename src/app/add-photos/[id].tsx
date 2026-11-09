@@ -6,7 +6,7 @@ import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Btn, Pill, fmtDate, useColors } from '@/components/ui';
 import { addCapture, getStation, listCaptures, photosInBox, type PhotoRow, type Station } from '@/lib/db';
 import { bbox, distanceM, formatDistance } from '@/lib/geo';
-import { readPose } from '@/lib/library';
+import { orientationOf, readPose } from '@/lib/library';
 
 const RADII = [15, 40, 100, 250];
 
@@ -63,6 +63,7 @@ export default function AddPhotos() {
         roll: pose.attitude?.roll ?? null,
         width: p.width,
         height: p.height,
+        orientation: orientationOf(p.width, p.height),
         is_reference: 0,
       });
     }

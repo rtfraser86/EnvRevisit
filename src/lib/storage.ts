@@ -4,7 +4,7 @@ import * as Sharing from 'expo-sharing';
 
 import { listCaptures, type Capture, type Station } from './db';
 
-const ALBUM = 'Revisit';
+const ALBUM = 'EnvRevisit';
 
 function capturesDir() {
   const dir = new Directory(Paths.document, 'captures');
@@ -14,7 +14,7 @@ function capturesDir() {
 
 /**
  * Move a freshly-taken photo into the app's documents folder (the copy the app relies on),
- * and optionally also save a copy to the camera roll in a "Revisit" album.
+ * and optionally also save a copy to the camera roll in a "EnvRevisit" album.
  */
 export async function persistCapture(
   tempUri: string,

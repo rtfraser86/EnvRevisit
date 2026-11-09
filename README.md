@@ -1,4 +1,4 @@
-# Revisit — repeat photo-point monitoring for iPhone
+# EnvRevisit — repeat photo-point monitoring for iPhone
 
 Map every geotagged photo in your camera roll, walk back to where one was taken, and retake it with a ghost overlay and heading / pitch / roll guidance. Each spot becomes a **station** that holds a time series you can swipe, scrub and compare.
 
@@ -9,7 +9,7 @@ Built with Expo (React Native), SDK 58. Stages 1–2 run in the free **Expo Go**
 ## Run it on your iPhone from Windows
 
 1. **Install Node.js** (LTS) on your PC: https://nodejs.org
-2. **Unzip** this folder somewhere, e.g. `C:\dev\revisit`.
+2. **Unzip** this folder somewhere, e.g. `C:\dev\EnvRevisit`.
 3. Open **PowerShell** in that folder and install dependencies:
    ```powershell
    npm install
@@ -44,13 +44,16 @@ Edit any file in `src/` and the app reloads on the phone.
 ### Where the guidance numbers come from
 - **Position**: phone GPS, about ±3–5 m at best. Final alignment is visual (the ghost).
 - **Heading**: iOS compass, true north. Camera-roll photos usually record the camera heading in EXIF (`GPSImgDirection`).
-- **Pitch / roll**: device motion sensors. iPhone Camera doesn't store these, so a station created from a camera-roll photo gets heading guidance only. The **first photo you take in Revisit** fills in pitch and roll, and every later visit gets full 3-axis guidance.
-- Photos taken in Revisit embed GPS, heading and a JSON `UserComment` with pitch/roll in their EXIF. They are saved in the app *and* (by default) in a **Revisit** album in Photos.
+- **Pitch / roll**: device motion sensors. iPhone Camera doesn't store these, so a station created from a camera-roll photo gets heading guidance only. The **first photo you take in EnvRevisit** fills in pitch and roll, and every later visit gets full 3-axis guidance.
+- Photos taken in EnvRevisit embed GPS, heading and a JSON `UserComment` with pitch/roll/orientation in their EXIF. They are saved in the app *and* (by default) in an **EnvRevisit** album in Photos.
+- **Landscape and portrait** both work. Pitch and roll come straight from the gravity vector, the app detects which way you're holding the phone, and the ghost, grid and guidance rotate to stay upright. Roll is measured relative to the frame you're shooting in, so a level landscape shot reads 0°. If the original was landscape and you're holding the phone upright (or vice versa), an orange banner tells you to turn it.
 
 ### First field check (2 minutes)
+The capture screen shows live `hdg / pitch / roll` numbers under the guidance line.
 1. Hold the phone upright in portrait, looking at the horizon. Pitch and roll should read near 0.
-2. Tilt the top of the phone back (camera looking up). The readout should say you are above the target, i.e. "Tilt down", and the ring should move down.
-3. Turn right. The ring should slide left.
+2. Tilt the top of the phone back (camera looking up). Pitch should go positive, the readout should say "Tilt down", and the ring should move down.
+3. Turn right. Heading should increase and the ring should slide left.
+4. Turn the phone sideways (either way) facing the same direction. Pitch and roll should again read near 0, and **heading should stay roughly the same** as in portrait. If heading jumps by about 90° in landscape, tell Claude.
 
 If any sign is backwards, tell Claude which one. It's a one-line fix in `src/lib/sensors.ts` or `src/components/alignment-guide.tsx`.
 
@@ -60,7 +63,7 @@ All data stays on the phone in SQLite (`revisit.db`). Tables: `photos` (camera-r
 ---
 
 ## Known limits of this build
-- **Portrait only.** Landscape reference photos are shown cropped to the frame. Hold the phone as it was held originally.
+- On-screen buttons stay in portrait position when you turn the phone sideways (the overlays rotate; the controls don't).
 - **Lens**: the camera opens at 1×. A reference shot at 0.5× or 2× won't line up yet.
 - **No automatic image alignment yet.** The timeline shows photos as captured (see Stage 3).
 - iCloud-only originals may be slow to appear the first time.
@@ -76,7 +79,7 @@ OpenCV via `react-native-fast-opencv`: ORB/AKAZE features → RANSAC homography 
 Feature-matching the live camera frame against the reference (VisionCamera frame processor) to drive "step left 0.5 m / closer", not just angles. This is the part no existing app does.
 
 **Stage 5 — export**
-A zip per station (originals + aligned + JSON/CSV) ready for change-detection scripts. Also lens/zoom matching and landscape support.
+A zip per station (originals + aligned + JSON/CSV) ready for change-detection scripts. Also lens/zoom matching.
 
 ### Moving to a development build (Stage 3+)
 OpenCV and VisionCamera aren't inside Expo Go, so the app needs its own build:

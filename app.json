@@ -1,22 +1,22 @@
 {
   "expo": {
-    "name": "Revisit",
-    "slug": "revisit",
+    "name": "EnvRevisit",
+    "slug": "envrevisit",
     "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "revisit",
+    "scheme": "envrevisit",
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon",
-      "bundleIdentifier": "au.com.fraserws.revisit",
+      "bundleIdentifier": "au.com.fraserws.envrevisit",
       "supportsTablet": false,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
-      "package": "au.com.fraserws.revisit",
+      "package": "au.com.fraserws.envrevisit",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -43,22 +43,22 @@
       [
         "expo-media-library",
         {
-          "photosPermission": "Revisit maps your geotagged photos so you can return to the same spot and retake them.",
-          "savePhotosPermission": "Revisit saves repeat photos to your library.",
+          "photosPermission": "EnvRevisit maps your geotagged photos so you can return to the same spot and retake them.",
+          "savePhotosPermission": "EnvRevisit saves repeat photos to your library.",
           "isAccessMediaLocationEnabled": true
         }
       ],
       [
         "expo-camera",
         {
-          "cameraPermission": "Revisit uses the camera to retake monitoring photos with a ghost overlay.",
+          "cameraPermission": "EnvRevisit uses the camera to retake monitoring photos with a ghost overlay.",
           "recordAudioAndroid": false
         }
       ],
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Revisit uses your location and compass to guide you back to photo points."
+          "locationWhenInUsePermission": "EnvRevisit uses your location and compass to guide you back to photo points."
         }
       ]
     ],

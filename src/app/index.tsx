@@ -174,9 +174,9 @@ export default function MapScreen() {
   if (perm && !perm.granted) {
     return (
       <SafeAreaView style={[styles.center, { backgroundColor: c.bg }]}>
-        <Text style={[styles.h1, { color: c.text }]}>Revisit</Text>
+        <Text style={[styles.h1, { color: c.text }]}>EnvRevisit</Text>
         <Text style={{ color: c.muted, textAlign: 'center', marginBottom: 20, paddingHorizontal: 30 }}>
-          Revisit needs access to your photos to map where you&apos;ve taken them before.
+          EnvRevisit needs access to your photos to map where you&apos;ve taken them before.
         </Text>
         <Btn title="Allow photo access" onPress={() => requestPerm()} />
       </SafeAreaView>
