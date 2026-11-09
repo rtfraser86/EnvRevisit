@@ -10,6 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AlignmentGuide, GuideReadout, type Target } from '@/components/alignment-guide';
 import { Slider } from '@/components/slider';
+import { StakeoutChip } from '@/components/stakeout';
 import { Btn, Pill, useColors } from '@/components/ui';
 import { addCapture, getReference, getStation, kvGet, kvSet, updateStation, type Capture, type Station } from '@/lib/db';
 import { distanceM, formatDistance } from '@/lib/geo';
@@ -249,6 +250,11 @@ export default function CaptureScreen() {
 
             <AlignmentGuide width={physW} height={physH} att={att} target={target} />
             <GuideReadout att={att} target={target} />
+            <StakeoutChip
+              fix={fix}
+              target={station ? { latitude: station.lat, longitude: station.lon } : null}
+              heading={att.heading}
+            />
 
             {mismatch && (
               <View style={styles.mismatch}>
@@ -353,7 +359,7 @@ const styles = StyleSheet.create({
   },
   mismatch: {
     position: 'absolute',
-    bottom: 10,
+    top: 56,
     left: 10,
     right: 10,
     padding: 8,

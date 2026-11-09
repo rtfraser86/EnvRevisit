@@ -49,6 +49,13 @@ export function localOffset(a: LatLon, b: LatLon, facingDeg: number) {
   return { forward: d * Math.cos(rel), right: d * Math.sin(rel), distance: d };
 }
 
+/** North / east offset of b from a, metres (good to a few cm over a few km). */
+export function neOffset(a: LatLon, b: LatLon) {
+  const d = distanceM(a, b);
+  const brg = toRad(bearingDeg(a, b));
+  return { north: d * Math.cos(brg), east: d * Math.sin(brg) };
+}
+
 export function formatDistance(m: number): string {
   if (m < 1) return `${Math.round(m * 100)} cm`;
   if (m < 1000) return `${m < 10 ? m.toFixed(1) : Math.round(m)} m`;
