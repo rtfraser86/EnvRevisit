@@ -1,0 +1,9 @@
+{
+  "name": "env-align",
+  "version": "1.0.0",
+  "description": "Repeat-photo image registration for EnvRevisit (Apple Vision)",
+  "main": "src/index.ts",
+  "license": "UNLICENSED",
+  "author": "Fraser Water & Spatial",
+  "homepage": "https://github.com/rtfraser86/EnvRevisit"
+}

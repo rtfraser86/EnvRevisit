@@ -78,7 +78,7 @@ All data stays on the phone in SQLite (`revisit.db`). Tables: `photos` (camera-r
 ---
 
 ## Automatic alignment (EnvRevisit build only)
-Every photo in a station is registered to the station's reference photo: ORB features (OpenCV), ratio-tested Hamming matches, a RANSAC homography (pure JS, `src/lib/homography.ts`) and an OpenCV `warpPerspective` into the reference frame (long side 2048 px). Originals are untouched; aligned copies live in the app's `aligned/` folder.
+Every photo in a station is registered to the station's reference photo by a small native module in this repo (`modules/env-align`), using Apple's Vision framework (`VNHomographicImageRegistrationRequest`) and a CoreImage perspective warp into the reference frame (long side 2048 px). Originals are untouched; aligned copies live in the app's `aligned/` folder.
 - New photos taken in the app are aligned automatically right after you shoot.
 - **Station → Automatic alignment → Align / Re-align** processes the whole sequence (e.g. older camera-roll photos). Changing the reference re-aligns everything.
 - Green ⇄ badge = aligned, orange ! = couldn't align (too different: viewpoint, season, light or lens).

@@ -30,7 +30,6 @@
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-native": "0.88.1",
-    "react-native-fast-opencv": "1.0.1",
     "react-native-gesture-handler": "~3.3.0",
     "react-native-maps": "1.29.11",
     "react-native-reanimated": "4.7.1",
