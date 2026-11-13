@@ -1,123 +1,184 @@
 import { StyleSheet, Text, View } from 'react-native';
 
 import { angleDiff } from '@/lib/geo';
+import type { ImageGuidance } from '@/lib/live-match';
 import type { Attitude } from '@/lib/sensors';
 
-// Approximate field of view of the iPhone main (1×) camera, portrait 3:4 frame.
-// Landscape swaps them.
-const FOV_SHORT = 50;
-const FOV_LONG = 64;
+// Approximate field of view of the iPhone main (1×) camera for a 4:3 frame: long side / short side.
+export const FOV_LONG = 67;
+export const FOV_SHORT = 53;
 
-export const TOL = { heading: 3, pitch: 2, roll: 1.5 };
+export const fovFor = (landscape: boolean) =>
+  landscape ? { hfov: FOV_LONG, vfov: FOV_SHORT } : { hfov: FOV_SHORT, vfov: FOV_LONG };
 
 export type Target = { heading: number | null; pitch: number | null; roll: number | null };
 
-export function attitudeDeltas(att: Attitude, target: Target) {
+/**
+ * What to do to line up with the ghost. Positive turn = turn right, tilt = tilt up,
+ * rotate = rotate the phone clockwise, scale > 1 = move closer.
+ */
+export type Deltas = {
+  source: 'image' | 'sensors';
+  turn: number | null;
+  tilt: number | null;
+  rotate: number | null;
+  scale: number | null;
+  quality?: number;
+  /** Where the ghost's centre is in the live view (fraction of frame, screen coords). */
+  ringX: number | null;
+  ringY: number | null;
+};
+
+const TOL = {
+  sensors: { turn: 3, tilt: 2, rotate: 1.5, scale: 1 },
+  image: { turn: 1, tilt: 1, rotate: 0.7, scale: 0.03 },
+};
+
+export function sensorDeltas(att: Attitude, target: Target, landscape: boolean): Deltas {
+  const { hfov, vfov } = fovFor(landscape);
+  const turn = target.heading != null && att.heading != null ? angleDiff(target.heading, att.heading) : null;
+  const tilt = target.pitch != null && att.pitch != null ? target.pitch - att.pitch : null;
+  const rotate = target.roll != null && att.roll != null ? target.roll - att.roll : null;
   return {
-    dHeading: target.heading != null && att.heading != null ? angleDiff(target.heading, att.heading) : null,
-    dPitch: target.pitch != null && att.pitch != null ? target.pitch - att.pitch : null,
-    dRoll: target.roll != null && att.roll != null ? target.roll - att.roll : null,
+    source: 'sensors',
+    turn,
+    tilt,
+    rotate,
+    scale: null,
+    ringX: turn != null ? Math.max(-0.5, Math.min(0.5, turn / hfov)) : null,
+    ringY: tilt != null ? Math.max(-0.5, Math.min(0.5, -tilt / vfov)) : null,
   };
 }
 
-/**
- * Overlay drawn in the *physical* frame (already rotated to match how the phone is held):
- * a target ring sits where the centre of the reference view is, relative to where the
- * camera points now. Move the phone until the ring covers the centre cross. The horizon
- * bar shows how far to rotate to match the roll.
- */
-export function AlignmentGuide({
-  width,
-  height,
-  att,
-  target,
-}: {
-  width: number;
-  height: number;
-  att: Attitude;
-  target: Target;
-}) {
-  const landscape = width > height;
-  const hfov = landscape ? FOV_LONG : FOV_SHORT;
-  const vfov = landscape ? FOV_SHORT : FOV_LONG;
-  const { dHeading, dPitch, dRoll } = attitudeDeltas(att, target);
-  const hasAny = dHeading != null || dPitch != null;
-  const dx = dHeading != null ? Math.max(-1, Math.min(1, dHeading / hfov)) * width : 0;
-  const dy = dPitch != null ? Math.max(-1, Math.min(1, -dPitch / vfov)) * height : 0;
-  const okH = dHeading == null || Math.abs(dHeading) <= TOL.heading;
-  const okP = dPitch == null || Math.abs(dPitch) <= TOL.pitch;
-  const okR = dRoll == null || Math.abs(dRoll) <= TOL.roll;
-  const allOk = okH && okP && okR && (dHeading != null || dPitch != null || dRoll != null);
-  const ring = allOk ? '#4ADE80' : '#FACC15';
+export function imageDeltas(g: ImageGuidance): Deltas {
+  return {
+    source: 'image',
+    turn: g.turn,
+    tilt: g.tilt,
+    rotate: g.rotate,
+    scale: g.scale,
+    quality: g.quality,
+    ringX: Math.max(-0.5, Math.min(0.5, g.ringX)),
+    ringY: Math.max(-0.5, Math.min(0.5, g.ringY)),
+  };
+}
 
+type Cell = { key: string; label: string; ok: boolean | null; text: string };
+
+export function deltaCells(d: Deltas): Cell[] {
+  const t = TOL[d.source];
+  const ang = (v: number | null, tol: number, pos: string, neg: string, label: string): Cell =>
+    v == null
+      ? { key: label, label, ok: null, text: '—' }
+      : Math.abs(v) <= tol
+        ? { key: label, label, ok: true, text: '✓' }
+        : { key: label, label, ok: false, text: `${v > 0 ? pos : neg} ${Math.abs(v).toFixed(1)}°` };
+  const cells = [
+    ang(d.turn, t.turn, '→', '←', 'Turn'),
+    ang(d.tilt, t.tilt, '↑', '↓', 'Tilt'),
+    ang(d.rotate, t.rotate, '↻', '↺', 'Rotate'),
+  ];
+  if (d.source === 'image' && d.scale != null) {
+    const pct = (d.scale - 1) * 100;
+    cells.push(
+      Math.abs(d.scale - 1) <= t.scale
+        ? { key: 'Dist', label: 'Distance', ok: true, text: '✓' }
+        : { key: 'Dist', label: 'Distance', ok: false, text: pct > 0 ? `Closer ${pct.toFixed(0)}%` : `Back ${(-pct).toFixed(0)}%` }
+    );
+  }
+  return cells;
+}
+
+export function allAligned(d: Deltas) {
+  const cells = deltaCells(d);
+  return cells.some((c) => c.ok !== null) && cells.every((c) => c.ok !== false);
+}
+
+/** Big, solid-coloured guidance band along the top of the frame. */
+export function GuideHud({ d }: { d: Deltas }) {
+  const cells = deltaCells(d);
   return (
-    <View pointerEvents="none" style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center' }]}>
-      <View style={[styles.crossH, { backgroundColor: 'rgba(255,255,255,0.85)' }]} />
-      <View style={[styles.crossV, { backgroundColor: 'rgba(255,255,255,0.85)' }]} />
-
-      {hasAny && (
-        <View style={[styles.ring, { borderColor: ring, transform: [{ translateX: dx }, { translateY: dy }] }]} />
-      )}
-
-      {dRoll != null && (
-        <View
-          style={[
-            styles.horizon,
-            {
-              width: width * 0.6,
-              backgroundColor: okR ? '#4ADE80' : '#FACC15',
-              transform: [{ rotate: `${dRoll}deg` }],
-            },
-          ]}
-        />
-      )}
+    <View style={styles.hud} pointerEvents="none">
+      <View style={styles.cells}>
+        {cells.map((c) => (
+          <View
+            key={c.key}
+            style={[
+              styles.cell,
+              { backgroundColor: c.ok === null ? 'rgba(55,65,81,0.92)' : c.ok ? 'rgba(21,128,61,0.95)' : 'rgba(180,83,9,0.95)' },
+            ]}>
+            <Text style={styles.cellLabel}>{c.label}</Text>
+            <Text style={styles.cellText} numberOfLines={1} adjustsFontSizeToFit>
+              {c.text}
+            </Text>
+          </View>
+        ))}
+      </View>
+      <Text style={styles.source}>
+        {d.source === 'image' ? `📷 Image match · ${d.quality ?? 0}%` : '🧭 Compass & tilt sensors'}
+      </Text>
     </View>
   );
 }
 
-/** Text readout, laid out to sit along the top edge of the physical frame. */
-export function GuideReadout({ att, target }: { att: Attitude; target: Target }) {
-  const { dHeading, dPitch, dRoll } = attitudeDeltas(att, target);
-  const item = (label: string, d: number | null, tol: number, pos: string, neg: string) => {
-    if (d == null) return <Text style={[styles.read, { color: 'rgba(255,255,255,0.55)' }]}>{label} —</Text>;
-    const ok = Math.abs(d) <= tol;
-    return (
-      <Text style={[styles.read, { color: ok ? '#4ADE80' : '#FACC15' }]}>
-        {ok ? `${label} ✓` : `${d > 0 ? pos : neg} ${Math.abs(d).toFixed(1)}°`}
-      </Text>
-    );
-  };
+/** Crosshair (fixed) and target ring (where the ghost's centre is) plus a horizon bar for roll. */
+export function AlignmentGuide({ width, height, d }: { width: number; height: number; d: Deltas }) {
+  const ok = allAligned(d);
+  const ring = ok ? '#22C55E' : '#FACC15';
+  const rollOk = d.rotate == null || Math.abs(d.rotate) <= TOL[d.source].rotate;
   return (
-    <View style={styles.readBand} pointerEvents="none">
-      <View style={styles.readRow}>
-        {item('Heading', dHeading, TOL.heading, '↻ Turn right', '↺ Turn left')}
-        {item('Pitch', dPitch, TOL.pitch, '↑ Tilt up', '↓ Tilt down')}
-        {item('Level', dRoll, TOL.roll, '⟳ Rotate cw', '⟲ Rotate ccw')}
-      </View>
-      <Text style={styles.raw}>
-        hdg {att.heading != null ? `${att.heading.toFixed(0)}°` : '—'}
-        {'   '}pitch {att.pitch != null ? `${att.pitch.toFixed(1)}°` : '—'}
-        {'   '}roll {att.roll != null ? `${att.roll.toFixed(1)}°` : '—'}
-      </Text>
+    <View pointerEvents="none" style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center' }]}>
+      {/* crosshair with dark outline so it shows on any background */}
+      <View style={styles.outlineH} />
+      <View style={styles.outlineV} />
+      <View style={styles.crossH} />
+      <View style={styles.crossV} />
+
+      {d.ringX != null && d.ringY != null && (
+        <View
+          style={[
+            styles.ring,
+            { borderColor: ring, transform: [{ translateX: d.ringX * width }, { translateY: d.ringY * height }] },
+          ]}
+        />
+      )}
+      {d.rotate != null && (
+        <View
+          style={[
+            styles.horizon,
+            { width: width * 0.7, backgroundColor: rollOk ? '#22C55E' : '#FACC15', transform: [{ rotate: `${d.rotate}deg` }] },
+          ]}
+        />
+      )}
+      {ok && (
+        <View style={styles.okBanner}>
+          <Text style={styles.okText}>✓ Lined up — take the photo</Text>
+        </View>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  crossH: { position: 'absolute', width: 28, height: 2 },
-  crossV: { position: 'absolute', width: 2, height: 28 },
-  ring: { position: 'absolute', width: 54, height: 54, borderRadius: 27, borderWidth: 3 },
-  horizon: { position: 'absolute', height: 2, opacity: 0.9 },
-  readBand: {
+  hud: { position: 'absolute', top: 0, left: 0, right: 0, padding: 6, gap: 4, backgroundColor: 'rgba(0,0,0,0.55)' },
+  cells: { flexDirection: 'row', gap: 6 },
+  cell: { flex: 1, borderRadius: 8, paddingVertical: 4, paddingHorizontal: 4, alignItems: 'center' },
+  cellLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: '700', textTransform: 'uppercase' },
+  cellText: { color: '#fff', fontSize: 20, fontWeight: '900', fontVariant: ['tabular-nums'] },
+  source: { color: '#fff', fontSize: 12, fontWeight: '600', textAlign: 'center' },
+  crossH: { position: 'absolute', width: 40, height: 3, backgroundColor: '#fff' },
+  crossV: { position: 'absolute', width: 3, height: 40, backgroundColor: '#fff' },
+  outlineH: { position: 'absolute', width: 44, height: 7, backgroundColor: 'rgba(0,0,0,0.6)' },
+  outlineV: { position: 'absolute', width: 7, height: 44, backgroundColor: 'rgba(0,0,0,0.6)' },
+  ring: { position: 'absolute', width: 64, height: 64, borderRadius: 32, borderWidth: 5 },
+  horizon: { position: 'absolute', height: 3, opacity: 0.95 },
+  okBanner: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    paddingVertical: 6,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    gap: 2,
+    bottom: '22%',
+    backgroundColor: 'rgba(21,128,61,0.95)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 999,
   },
-  readRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 10, gap: 6 },
-  read: { fontSize: 13, fontWeight: '700', flexShrink: 1 },
-  raw: { color: 'rgba(255,255,255,0.7)', fontSize: 11, textAlign: 'center', fontVariant: ['tabular-nums'] },
+  okText: { color: '#fff', fontWeight: '900', fontSize: 17 },
 });

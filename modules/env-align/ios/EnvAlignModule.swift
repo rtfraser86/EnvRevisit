@@ -6,10 +6,13 @@ import simd
 
 /// Repeat-photo registration using Apple's Vision framework.
 ///
-/// `align(refUri, movUri, outUri, outLong)` warps the moving photo onto the reference photo's
-/// view with a homography from VNHomographicImageRegistrationRequest, and writes a JPEG the
-/// same size as the reference (long side ≤ outLong). Never throws: returns ["ok": false, ...]
-/// with a reason instead, so the JS side can mark the photo as "couldn't align".
+/// - `align(refUri, movUri, outUri, outLong)` warps the moving photo onto the reference view and
+///   writes a JPEG the size of the reference (long side ≤ outLong).
+/// - `register(refUri, movUri, workLong)` only estimates the transform (used live, ~1×/s,
+///   to guide the user onto the original framing).
+/// - `edges(uri, outUri, long)` writes a PNG whose alpha is the photo's edges (for the outline ghost).
+///
+/// None of these throw: they return ["ok": false, "reason": …] instead.
 public class EnvAlignModule: Module {
   public func definition() -> ModuleDefinition {
     Name("EnvAlign")
@@ -17,11 +20,25 @@ public class EnvAlignModule: Module {
     AsyncFunction("align") { (refUri: String, movUri: String, outUri: String, outLong: Double) -> [String: Any] in
       return EnvAligner.align(refUri: refUri, movUri: movUri, outUri: outUri, outLong: CGFloat(outLong))
     }
+
+    AsyncFunction("register") { (refUri: String, movUri: String, workLong: Double) -> [String: Any] in
+      return EnvAligner.register(refUri: refUri, movUri: movUri, workLong: CGFloat(workLong))
+    }
+
+    AsyncFunction("edges") { (uri: String, outUri: String, long: Double) -> [String: Any] in
+      return EnvAligner.edges(uri: uri, outUri: outUri, long: CGFloat(long))
+    }
   }
 }
 
+struct Estimate {
+  let m: simd_float3x3 // maps moving-image pixels → reference pixels, CoreImage coords (origin bottom-left)
+  let workSize: CGSize
+  let before: Double
+  let after: Double
+}
+
 enum EnvAligner {
-  static let workLong: CGFloat = 1024
   static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
 
   static func fail(_ reason: String) -> [String: Any] {
@@ -33,11 +50,11 @@ enum EnvAligner {
     return uri
   }
 
-  /// Loads the image upright (EXIF orientation applied) and redraws it at exactly `size` px.
   static func load(_ uri: String) -> UIImage? {
     return UIImage(contentsOfFile: path(from: uri))
   }
 
+  /// Redraws upright (EXIF orientation applied) at exactly `size` px.
   static func render(_ img: UIImage, size: CGSize) -> CGImage? {
     let format = UIGraphicsImageRendererFormat()
     format.scale = 1
@@ -50,16 +67,15 @@ enum EnvAligner {
 
   static func fit(_ s: CGSize, long: CGFloat) -> CGSize {
     let k = min(1, long / max(s.width, s.height))
-    return CGSize(width: (s.width * k).rounded(), height: (s.height * k).rounded())
+    return CGSize(width: max(1, (s.width * k).rounded()), height: max(1, (s.height * k).rounded()))
   }
 
-  /// Apply a 3×3 homography (column-major simd) to a point.
   static func apply(_ m: simd_float3x3, _ p: CGPoint) -> CGPoint {
     let v = m * simd_float3(Float(p.x), Float(p.y), 1)
     return CGPoint(x: CGFloat(v.x / v.z), y: CGFloat(v.y / v.z))
   }
 
-  /// Conjugate a homography found at one scale to another: H' = S·H·S⁻¹.
+  /// H' = S·H·S⁻¹ for a uniform scale k.
   static func rescale(_ m: simd_float3x3, by k: CGFloat) -> simd_float3x3 {
     let kf = Float(k)
     let s = simd_float3x3(diagonal: simd_float3(kf, kf, 1))
@@ -67,8 +83,17 @@ enum EnvAligner {
     return s * m * si
   }
 
-  /// Warp `image` (CoreImage coordinates, origin bottom-left) with homography `m`,
-  /// cropped to `size` and composited over black.
+  /// Same transform expressed with the y axis flipped (top-left ↔ bottom-left origin).
+  static func flipY(_ m: simd_float3x3, height: CGFloat) -> simd_float3x3 {
+    // F = [1 0 0; 0 -1 h; 0 0 1] (column-major below), F⁻¹ = F
+    let f = simd_float3x3(columns: (
+      simd_float3(1, 0, 0),
+      simd_float3(0, -1, 0),
+      simd_float3(0, Float(height), 1)
+    ))
+    return f * m * f
+  }
+
   static func warp(_ image: CIImage, _ m: simd_float3x3, size: CGSize) -> CIImage? {
     let w = size.width
     let h = size.height
@@ -84,7 +109,6 @@ enum EnvAligner {
     return out.cropped(to: rect).composited(over: black)
   }
 
-  /// Mean absolute difference (0–1) between two same-sized images.
   static func meanDiff(_ a: CIImage, _ b: CIImage, size: CGSize) -> Double {
     guard let d = CIFilter(name: "CIDifferenceBlendMode"),
           let avg = CIFilter(name: "CIAreaAverage") else { return 1 }
@@ -101,7 +125,6 @@ enum EnvAligner {
   }
 
   static func rowMajor(_ m: simd_float3x3) -> [Double] {
-    // simd is column-major: m[col][row]
     return [
       Double(m[0][0]), Double(m[1][0]), Double(m[2][0]),
       Double(m[0][1]), Double(m[1][1]), Double(m[2][1]),
@@ -109,74 +132,122 @@ enum EnvAligner {
     ]
   }
 
-  static func align(refUri: String, movUri: String, outUri: String, outLong: CGFloat) -> [String: Any] {
-    guard let refImg = load(refUri) else { return fail("Could not read the reference photo") }
-    guard let movImg = load(movUri) else { return fail("Could not read the photo") }
-
+  static func estimate(_ refImg: UIImage, _ movImg: UIImage, workLong: CGFloat) -> (Estimate?, String?) {
     let refAspect = refImg.size.width / refImg.size.height
     let movAspect = movImg.size.width / movImg.size.height
     if abs(refAspect - movAspect) > 0.12 * refAspect {
-      return fail("Different shape from the reference (portrait vs landscape or a different crop)")
+      return (nil, "Different shape from the reference (portrait vs landscape or a different crop)")
     }
-
-    // Work at ~1024 px: both images at the reference's working size.
     let workSize = fit(refImg.size, long: workLong)
     guard let refWork = render(refImg, size: workSize), let movWork = render(movImg, size: workSize) else {
-      return fail("Could not prepare the photos")
+      return (nil, "Could not prepare the photos")
     }
-
     let request = VNHomographicImageRegistrationRequest(targetedCGImage: movWork, options: [:])
     let handler = VNImageRequestHandler(cgImage: refWork, options: [:])
     do {
       try handler.perform([request])
     } catch {
-      return fail("Registration failed: \(error.localizedDescription)")
+      return (nil, "Registration failed: \(error.localizedDescription)")
     }
     guard let obs = request.results?.first as? VNImageHomographicAlignmentObservation else {
-      return fail("No alignment found")
+      return (nil, "No alignment found")
     }
-    let hFound = obs.warpTransform
+    let found = obs.warpTransform
 
-    // Vision's convention (which image the transform maps onto which) isn't spelled out, so
-    // try both directions and keep whichever makes the warped photo match the reference best.
+    // Vision doesn't document which way round the transform goes or which corner is the
+    // origin, so try all four readings and keep the one that best matches the reference.
     let refCI = CIImage(cgImage: refWork)
     let movCI = CIImage(cgImage: movWork)
-    let baseline = meanDiff(movCI, refCI, size: workSize)
+    let before = meanDiff(movCI, refCI, size: workSize)
+    let h = workSize.height
+    let candidates = [found, found.inverse, flipY(found, height: h), flipY(found.inverse, height: h)]
     var best: (m: simd_float3x3, score: Double)? = nil
-    for cand in [hFound, hFound.inverse] {
+    for cand in candidates {
       guard let w = warp(movCI, cand, size: workSize) else { continue }
       let s = meanDiff(w, refCI, size: workSize)
       if best == nil || s < best!.score { best = (cand, s) }
     }
-    guard let chosen = best else { return fail("Could not apply the alignment") }
+    guard let chosen = best else { return (nil, "Could not apply the alignment") }
+    return (Estimate(m: chosen.m, workSize: workSize, before: before, after: chosen.score), nil)
+  }
 
-    // Full-size output at the reference's output size.
+  static func register(refUri: String, movUri: String, workLong: CGFloat) -> [String: Any] {
+    guard let refImg = load(refUri) else { return fail("Could not read the reference photo") }
+    guard let movImg = load(movUri) else { return fail("Could not read the photo") }
+    let (est, err) = estimate(refImg, movImg, workLong: workLong)
+    guard let e = est else { return fail(err ?? "No alignment found") }
+    return [
+      "ok": true,
+      "h": rowMajor(e.m),
+      "width": Double(e.workSize.width),
+      "height": Double(e.workSize.height),
+      "diffBefore": e.before,
+      "diffAfter": e.after,
+    ]
+  }
+
+  static func align(refUri: String, movUri: String, outUri: String, outLong: CGFloat) -> [String: Any] {
+    guard let refImg = load(refUri) else { return fail("Could not read the reference photo") }
+    guard let movImg = load(movUri) else { return fail("Could not read the photo") }
+    let (est, err) = estimate(refImg, movImg, workLong: 1024)
+    guard let e = est else { return fail(err ?? "No alignment found") }
+
     let outSize = fit(refImg.size, long: outLong)
     guard let movOut = render(movImg, size: outSize) else { return fail("Could not prepare the output") }
-    let k = outSize.width / workSize.width
-    let hOut = rescale(chosen.m, by: k)
+    let hOut = rescale(e.m, by: outSize.width / e.workSize.width)
     guard let warped = warp(CIImage(cgImage: movOut), hOut, size: outSize),
           let cg = ciContext.createCGImage(warped, from: CGRect(origin: .zero, size: outSize)),
           let jpeg = UIImage(cgImage: cg).jpegData(compressionQuality: 0.9) else {
       return fail("Could not render the aligned photo")
     }
-    let outPath = path(from: outUri)
-    do {
-      try FileManager.default.createDirectory(
-        at: URL(fileURLWithPath: outPath).deletingLastPathComponent(), withIntermediateDirectories: true)
-      try jpeg.write(to: URL(fileURLWithPath: outPath), options: .atomic)
-    } catch {
-      return fail("Could not save the aligned photo: \(error.localizedDescription)")
-    }
-
+    if let saveErr = write(jpeg, to: outUri) { return fail(saveErr) }
     return [
       "ok": true,
       "uri": outUri,
       "width": Double(outSize.width),
       "height": Double(outSize.height),
-      "h": rowMajor(chosen.m), // working-size pixels, CoreImage coords (origin bottom-left)
-      "diffBefore": baseline,
-      "diffAfter": chosen.score,
+      "h": rowMajor(e.m),
+      "diffBefore": e.before,
+      "diffAfter": e.after,
     ]
+  }
+
+  static func write(_ data: Data, to uri: String) -> String? {
+    let p = path(from: uri)
+    do {
+      try FileManager.default.createDirectory(
+        at: URL(fileURLWithPath: p).deletingLastPathComponent(), withIntermediateDirectories: true)
+      try data.write(to: URL(fileURLWithPath: p), options: .atomic)
+      return nil
+    } catch {
+      return "Could not save: \(error.localizedDescription)"
+    }
+  }
+
+  /// White lines on transparent: alpha = edge strength. Tinted in the app.
+  static func edges(uri: String, outUri: String, long: CGFloat) -> [String: Any] {
+    guard let img = load(uri) else { return fail("Could not read the photo") }
+    let size = fit(img.size, long: long)
+    guard let cg = render(img, size: size) else { return fail("Could not prepare the photo") }
+    let rect = CGRect(origin: .zero, size: size)
+    var ci = CIImage(cgImage: cg)
+      .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0])
+    // A little blur first so grass and leaf texture doesn't turn into noise.
+    ci = ci.clampedToExtent()
+      .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 1.5])
+      .cropped(to: rect)
+    ci = ci.applyingFilter("CIEdges", parameters: [kCIInputIntensityKey: 6.0]).cropped(to: rect)
+    ci = ci.applyingFilter("CIColorControls", parameters: [
+      kCIInputSaturationKey: 0,
+      kCIInputBrightnessKey: -0.08,
+      kCIInputContrastKey: 1.8,
+    ])
+    ci = ci.applyingFilter("CIMaskToAlpha").cropped(to: rect)
+    guard let png = ciContext.pngRepresentation(of: ci, format: .RGBA8,
+                                                colorSpace: CGColorSpaceCreateDeviceRGB(), options: [:]) else {
+      return fail("Could not render edges")
+    }
+    if let saveErr = write(png, to: outUri) { return fail(saveErr) }
+    return ["ok": true, "uri": outUri, "width": Double(size.width), "height": Double(size.height)]
   }
 }

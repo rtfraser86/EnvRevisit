@@ -1,21 +1,29 @@
 import { requireOptionalNativeModule } from 'expo';
 
-export type AlignNativeResult =
+type Fail = { ok: false; reason: string };
+
+export type RegisterResult =
   | {
       ok: true;
-      uri: string;
+      /** Row-major homography mapping moving-image px → reference px, CoreImage coords (y up). */
+      h: number[];
+      /** Working-image size the homography is expressed in. */
       width: number;
       height: number;
-      /** Homography, row-major, at the 1024 px working size (CoreImage coords). */
-      h: number[];
       /** Mean absolute difference vs the reference before / after warping (0–1). */
       diffBefore: number;
       diffAfter: number;
     }
-  | { ok: false; reason: string };
+  | Fail;
+
+export type AlignNativeResult = (RegisterResult & { ok: true; uri: string }) | Fail;
+
+export type EdgesResult = { ok: true; uri: string; width: number; height: number } | Fail;
 
 type EnvAlignModule = {
   align(refUri: string, movUri: string, outUri: string, outLong: number): Promise<AlignNativeResult>;
+  register(refUri: string, movUri: string, workLong: number): Promise<RegisterResult>;
+  edges(uri: string, outUri: string, long: number): Promise<EdgesResult>;
 };
 
 /** null in Expo Go (the native module only exists in the EnvRevisit build). */

@@ -15,6 +15,7 @@ import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { Asset } from 'expo-media-library';
 
 import { getReference, listCaptures, setAlignment, type Capture } from './db';
+import { guidanceFromHomography, plausibleGuidance, type ImageGuidance } from './live-match';
 
 export const alignmentAvailable = EnvAlign != null;
 
@@ -32,7 +33,7 @@ async function localUri(uri: string): Promise<string> {
 }
 
 /** Upright JPEG copy of the photo with its long side ≤ `long` px (EXIF orientation baked in). */
-async function prepare(uri: string, long: number) {
+export async function prepare(uri: string, long: number) {
   const src = await localUri(uri);
   const probe = await ImageManipulator.manipulate(src).renderAsync();
   const { width, height } = probe;
@@ -136,3 +137,41 @@ export async function alignStation(stationId: number, onProgress?: (p: AlignProg
   }
   return p;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Ghost helpers for the capture screen
+
+/** Outline (edge) image of a photo, cached per capture. White lines on transparent → tint in the UI. */
+export async function edgesFor(cap: Capture): Promise<string | null> {
+  if (!EnvAlign) return null;
+  const f = new File(alignedDir(), `edges_c${cap.id}.png`);
+  if (f.exists) return f.uri;
+  const src = await prepare(cap.uri, 1600);
+  try {
+    const res = await EnvAlign.edges(src.uri, f.uri, 1600);
+    return res.ok ? res.uri : null;
+  } finally {
+    deleteFile(src.uri);
+  }
+}
+
+/** Small upright copy of the ghost photo for live matching (delete it when done). */
+export async function ghostForMatching(cap: Capture): Promise<string> {
+  const r = await prepare(cap.uri, 1024);
+  return r.uri;
+}
+
+export type LiveMatch = { ok: true; g: ImageGuidance; at: number } | { ok: false; reason: string; at: number };
+
+/** Register one live camera frame against the ghost and turn it into guidance. */
+export async function matchLiveFrame(ghostUri: string, frameUri: string, hfov: number, vfov: number): Promise<LiveMatch> {
+  const at = Date.now();
+  if (!EnvAlign) return { ok: false, reason: 'Needs the EnvRevisit build', at };
+  const r = await EnvAlign.register(ghostUri, frameUri, 640);
+  if (!r.ok) return { ok: false, reason: r.reason, at };
+  const g = guidanceFromHomography(r.h, r.width, r.height, hfov, vfov, r.diffBefore, r.diffAfter);
+  if (!g || !plausibleGuidance(g) || g.quality < 8) return { ok: false, reason: 'No confident match', at };
+  return { ok: true, g, at };
+}
+
+export { deleteFile };

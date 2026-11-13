@@ -6,18 +6,28 @@ import { FlatList, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimen
 import { Slider } from '@/components/slider';
 import { StampOverlay, stampLines } from '@/components/stamp';
 import { Pill, fmtDate, fmtDateTime, useColors } from '@/components/ui';
+import { alignmentAvailable } from '@/lib/align';
 import { getStation, listCaptures, updateStation, type Capture, type Station } from '@/lib/db';
 
 type Mode = 'swipe' | 'scrub' | 'compare';
+type Cmp = 'split' | 'blend' | 'flicker';
 
 export default function Timeline() {
-  const { id, start } = useLocalSearchParams<{ id: string; start?: string }>();
+  const { id, start, a: aParam, b: bParam, view } = useLocalSearchParams<{
+    id: string;
+    start?: string;
+    a?: string;
+    b?: string;
+    view?: string;
+  }>();
   const sid = Number(id);
   const c = useColors();
   const { width: winW, height: winH } = useWindowDimensions();
   const [station, setStation] = useState<Station | null>(null);
   const [caps, setCaps] = useState<Capture[]>([]);
-  const [mode, setMode] = useState<Mode>('swipe');
+  const [mode, setMode] = useState<Mode>(view === 'compare' ? 'compare' : 'swipe');
+  const [cmp, setCmp] = useState<Cmp>(view === 'compare' ? 'flicker' : 'split');
+  const [flickB, setFlickB] = useState(true);
   const [useAligned, setUseAligned] = useState(true);
   const [index, setIndex] = useState(0);
   const [scrub, setScrub] = useState(0); // 0..1 across the whole series
@@ -34,10 +44,32 @@ export default function Timeline() {
       const startIdx = start ? Math.max(0, list.findIndex((x) => String(x.id) === start)) : list.length - 1;
       setIndex(startIdx);
       setScrub(list.length > 1 ? startIdx / (list.length - 1) : 0);
-      setA(0);
-      setB(Math.max(0, list.length - 1));
+      const ai = aParam ? list.findIndex((x) => String(x.id) === aParam) : -1;
+      const bi = bParam ? list.findIndex((x) => String(x.id) === bParam) : -1;
+      setA(ai >= 0 ? ai : 0);
+      setB(bi >= 0 ? bi : Math.max(0, list.length - 1));
     })();
-  }, [sid, start]);
+  }, [sid, start, aParam, bParam]);
+
+  // A photo just taken is aligned in the background: refresh until its result is in.
+  const waitingFor = bParam && alignmentAvailable ? caps.find((x) => String(x.id) === bParam) : undefined;
+  const pending = !!waitingFor && !waitingFor.align_status;
+  useEffect(() => {
+    if (!pending) return;
+    let tries = 0;
+    const t = setInterval(async () => {
+      tries++;
+      setCaps(await listCaptures(sid));
+      if (tries > 30) clearInterval(t);
+    }, 2000);
+    return () => clearInterval(t);
+  }, [pending, sid]);
+
+  useEffect(() => {
+    if (mode !== 'compare' || cmp !== 'flicker') return;
+    const t = setInterval(() => setFlickB((v) => !v), 600);
+    return () => clearInterval(t);
+  }, [mode, cmp]);
 
   const ref = caps.find((x) => x.is_reference) ?? caps[0];
   const aspect = ref?.width && ref?.height ? ref.width / ref.height : 3 / 4;
@@ -131,15 +163,37 @@ export default function Timeline() {
           </View>
         )}
 
-        {mode === 'compare' && (
+        {mode === 'compare' && caps[a] && caps[b] && (
           <View style={{ width: frameW, height: frameH }}>
-            {img(pick(caps[b]))}
-            <View style={[StyleSheet.absoluteFill, { right: undefined, width: frameW * split, overflow: 'hidden' }]}>
-              <Image source={{ uri: pick(caps[a]) }} style={{ width: frameW, height: frameH }} contentFit="cover" transition={0} />
-            </View>
-            <View style={[styles.divider, { left: frameW * split - 1 }]} />
-            <Text style={[styles.tag, { left: 8 }]}>{fmtDate(caps[a].taken_at)}</Text>
-            <Text style={[styles.tag, { right: 8 }]}>{fmtDate(caps[b].taken_at)}</Text>
+            {cmp === 'split' && (
+              <>
+                {img(pick(caps[b]))}
+                <View style={[StyleSheet.absoluteFill, { right: undefined, width: frameW * split, overflow: 'hidden' }]}>
+                  <Image source={{ uri: pick(caps[a]) }} style={{ width: frameW, height: frameH }} contentFit="cover" transition={0} />
+                </View>
+                <View style={[styles.divider, { left: frameW * split - 1 }]} />
+                <Text style={[styles.tag, { left: 8 }]}>{fmtDate(caps[a].taken_at)}</Text>
+                <Text style={[styles.tag, { right: 8 }]}>{fmtDate(caps[b].taken_at)}</Text>
+              </>
+            )}
+            {cmp === 'blend' && (
+              <>
+                {img(pick(caps[a]))}
+                {img(pick(caps[b]), split)}
+                <Text style={[styles.tag, { left: 8 }]}>{fmtDate(caps[a].taken_at)}</Text>
+                <Text style={[styles.tag, { right: 8 }]}>{fmtDate(caps[b].taken_at)}</Text>
+              </>
+            )}
+            {cmp === 'flicker' && (
+              <>
+                {img(pick(caps[a]))}
+                {img(pick(caps[b]), flickB ? 1 : 0)}
+                <Text style={[styles.tag, { left: 8 }]}>{fmtDate((flickB ? caps[b] : caps[a]).taken_at)}</Text>
+              </>
+            )}
+            {pending && (
+              <Text style={[styles.tag, { left: 8, top: undefined, bottom: 8 }]}>Aligning the new photo…</Text>
+            )}
           </View>
         )}
       </View>
@@ -165,7 +219,14 @@ export default function Timeline() {
         )}
         {mode === 'compare' && (
           <>
-            <Slider value={split} onChange={setSplit} trackColor={c.line} fillColor={c.accent} thumbColor={c.text} />
+            <View style={{ flexDirection: 'row', gap: 8, justifyContent: 'center' }}>
+              {(['split', 'blend', 'flicker'] as Cmp[]).map((m) => (
+                <Pill key={m} label={m[0].toUpperCase() + m.slice(1)} active={cmp === m} onPress={() => setCmp(m)} />
+              ))}
+            </View>
+            {cmp !== 'flicker' && (
+              <Slider value={split} onChange={setSplit} trackColor={c.line} fillColor={c.accent} thumbColor={c.text} />
+            )}
             <Text style={{ color: c.muted }}>Tap thumbnails: first tap sets the left (before) image, second tap sets the right (after).</Text>
           </>
         )}

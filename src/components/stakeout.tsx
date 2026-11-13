@@ -88,7 +88,7 @@ const styles = StyleSheet.create({
   chip: {
     position: 'absolute',
     left: 10,
-    top: 50,
+    top: 84,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
@@ -96,7 +96,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 10,
     backgroundColor: 'rgba(0,0,0,0.55)',
-    maxWidth: '92%',
+    maxWidth: '62%',
   },
   dot: { width: 26, height: 26, borderRadius: 13, borderWidth: 4, margin: 4 },
   dist: { fontSize: 18, fontWeight: '800', fontVariant: ['tabular-nums'] },

@@ -5,10 +5,28 @@ import { usePermissions as useMediaPermissions } from 'expo-media-library';
 import { router, useLocalSearchParams } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState, type ComponentRef } from 'react';
-import { ActivityIndicator, PixelRatio, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import {
+  ActivityIndicator,
+  FlatList,
+  Modal,
+  PixelRatio,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { AlignmentGuide, GuideReadout, type Target } from '@/components/alignment-guide';
+import {
+  AlignmentGuide,
+  GuideHud,
+  allAligned,
+  fovFor,
+  imageDeltas,
+  sensorDeltas,
+  type Target,
+} from '@/components/alignment-guide';
 import { Slider } from '@/components/slider';
 import { StakeoutChip } from '@/components/stakeout';
 import {
@@ -20,15 +38,35 @@ import {
   stampLines,
   type StampSettings,
 } from '@/components/stamp';
-import { Btn, Pill, useColors } from '@/components/ui';
-import { addCapture, getReference, getStation, kvGet, kvSet, updateStation, type Capture, type Station } from '@/lib/db';
-import { alignCapture, alignmentAvailable } from '@/lib/align';
+import { Btn, Pill, fmtDate, useColors } from '@/components/ui';
+import {
+  addCapture,
+  getStation,
+  kvGet,
+  kvSet,
+  listCaptures,
+  updateStation,
+  type Capture,
+  type Station,
+} from '@/lib/db';
+import {
+  alignCapture,
+  alignmentAvailable,
+  deleteFile,
+  edgesFor,
+  ghostForMatching,
+  matchLiveFrame,
+  type LiveMatch,
+} from '@/lib/align';
 import { distanceM, formatDistance } from '@/lib/geo';
 import { orientationOf } from '@/lib/library';
 import { shotOf, useAttitude, usePosition } from '@/lib/sensors';
 import { persistCapture, saveToPhotosLibrary } from '@/lib/storage';
 
-type Mode = 'blend' | 'split' | 'flicker' | 'off';
+type Mode = 'blend' | 'edges' | 'split' | 'flicker' | 'off';
+const MODES: Mode[] = ['blend', 'edges', 'split', 'flicker', 'off'];
+const EDGE_COLOURS = ['#22D3EE', '#F472B6', '#FACC15', '#FFFFFF'];
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export default function CaptureScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -40,8 +78,21 @@ export default function CaptureScreen() {
   const [camPerm, requestCamPerm] = useCameraPermissions();
   const [mediaPerm, requestMediaPerm] = useMediaPermissions();
   const [station, setStation] = useState<Station | null>(null);
-  const [ref, setRef] = useState<Capture | null>(null);
+  const [caps, setCaps] = useState<Capture[]>([]);
+  const [ghostId, setGhostId] = useState<number | null>(null);
+  const [picking, setPicking] = useState(false);
   const [mode, setMode] = useState<Mode>('blend');
+  const [edgeColour, setEdgeColour] = useState(0);
+  const [edges, setEdges] = useState<{ id: number; uri: string | null } | null>(null);
+  const [liveOn, setLiveOn] = useState(alignmentAvailable);
+  const [live, setLive] = useState<LiveMatch | null>(null);
+  const [ghostSmall, setGhostSmall] = useState<string | null>(null);
+  const [flash, setFlash] = useState(false);
+  const [lastId, setLastId] = useState<number | null>(null);
+  const busyRef = useRef(false);
+  const liveInFlight = useRef<Promise<void> | null>(null);
+  const fovRef = useRef(fovFor(false));
+  const wasAligned = useRef(false);
   const [amount, setAmount] = useState(0.5); // opacity for blend, divider for split
   const [flickOn, setFlickOn] = useState(true);
   const [grid, setGrid] = useState(true);
@@ -60,8 +111,17 @@ export default function CaptureScreen() {
 
   useEffect(() => {
     getStation(sid).then(setStation);
-    getReference(sid).then(setRef);
+    (async () => {
+      const list = await listCaptures(sid);
+      setCaps(list);
+      const saved = await kvGet(`ghost:${sid}`);
+      const ref = list.find((x) => x.is_reference) ?? list[0];
+      const pick =
+        saved === 'latest' ? list[list.length - 1] : list.find((x) => String(x.id) === saved) ?? ref;
+      setGhostId(pick?.id ?? null);
+    })();
     kvGet('saveToPhotos').then((v) => setSaveToPhotos(v !== '0'));
+    kvGet('edgeColour').then((v) => v && setEdgeColour(Number(v) % EDGE_COLOURS.length));
     kvGet(`stamp:${sid}`).then((v) => {
       if (v) {
         try {
@@ -119,15 +179,108 @@ export default function CaptureScreen() {
     return () => clearInterval(t);
   }, [mode]);
 
+  const ghost = caps.find((x) => x.id === ghostId) ?? null;
+  const refCap = caps.find((x) => x.is_reference) ?? caps[0] ?? null;
+
+  const chooseGhost = (cap: Capture | 'latest') => {
+    const pick = cap === 'latest' ? caps[caps.length - 1] : cap;
+    if (!pick) return;
+    setGhostId(pick.id);
+    kvSet(`ghost:${sid}`, cap === 'latest' ? 'latest' : String(pick.id));
+    setPicking(false);
+  };
+
+  // Outline image of the ghost (computed once per photo, cached on disk).
+  const needEdges = mode === 'edges' && !!ghost && edges?.id !== ghost.id;
+  useEffect(() => {
+    if (!needEdges || !ghost) return;
+    let cancelled = false;
+    edgesFor(ghost)
+      .then((uri) => !cancelled && setEdges({ id: ghost.id, uri }))
+      .catch(() => !cancelled && setEdges({ id: ghost.id, uri: null }));
+    return () => {
+      cancelled = true;
+    };
+  }, [needEdges, ghost]);
+
+  // Small copy of the ghost for live matching.
+  const ghostUri = ghost?.uri;
+  useEffect(() => {
+    if (!alignmentAvailable || !ghostUri || !ghost) return;
+    let cancelled = false;
+    let made: string | null = null;
+    ghostForMatching(ghost)
+      .then((u) => {
+        made = u;
+        if (!cancelled) setGhostSmall(u);
+        else deleteFile(u);
+      })
+      .catch((e) => console.warn('ghost prep', e));
+    return () => {
+      cancelled = true;
+      setGhostSmall(null);
+      if (made) deleteFile(made);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ghostUri]);
+
+  // Live image matching: grab a silent low-quality frame, register it against the ghost, repeat.
+  useEffect(() => {
+    if (!liveOn || !ready || !ghostSmall) return;
+    let stop = false;
+    (async () => {
+      while (!stop) {
+        if (busyRef.current || !cam.current) {
+          await sleep(300);
+          continue;
+        }
+        const run = (async () => {
+          const pic = await cam.current?.takePictureAsync({ quality: 0.3, shutterSound: false });
+          if (!pic) return;
+          try {
+            if (stop) return;
+            const { hfov, vfov } = fovRef.current;
+            const m = await matchLiveFrame(ghostSmall, pic.uri, hfov, vfov);
+            if (!stop) setLive(m);
+          } finally {
+            deleteFile(pic.uri);
+          }
+        })();
+        liveInFlight.current = run;
+        try {
+          await run;
+        } catch (e) {
+          console.warn('live match', e);
+          await sleep(1000);
+        }
+        liveInFlight.current = null;
+        await sleep(200);
+      }
+    })();
+    return () => {
+      stop = true;
+    };
+  }, [liveOn, ready, ghostSmall]);
+
+  // A live match goes stale after a few seconds without a fresh one.
+  useEffect(() => {
+    if (!live) return;
+    const t = setTimeout(() => setLive(null), 3000);
+    return () => clearTimeout(t);
+  }, [live]);
+
   // ---- Geometry -------------------------------------------------------------------
   // The UI stays portrait. When the phone is turned sideways, everything that has to look
   // upright to the person holding it (ghost, grid, guide, readout) lives in a "physical
   // frame" rotated ±90°. The camera preview itself already looks upright, so it isn't rotated.
   const shot = shotOf(att.hold);
   const refShot =
-    station?.orientation ?? ref?.orientation ?? orientationOf(ref?.width ?? null, ref?.height ?? null) ?? 'portrait';
-  const refAspect = // width / height as the reference is viewed upright
-    ref?.width && ref?.height ? ref.width / ref.height : refShot === 'landscape' ? 4 / 3 : 3 / 4;
+    ghost?.orientation ??
+    orientationOf(ghost?.width ?? null, ghost?.height ?? null) ??
+    station?.orientation ??
+    'portrait';
+  const refAspect = // width / height as the ghost is viewed upright
+    ghost?.width && ghost?.height ? ghost.width / ghost.height : refShot === 'landscape' ? 4 / 3 : 3 / 4;
   const sideways = shot === 'landscape';
   const screenAspect = sideways ? 1 / refAspect : refAspect; // the box as laid out on the portrait screen
   const maxH = winH * 0.62;
@@ -140,20 +293,34 @@ export default function CaptureScreen() {
   const physW = sideways ? boxH : boxW;
   const physH = sideways ? boxW : boxH;
   const physRotate = att.hold === 'cw' ? '90deg' : att.hold === 'ccw' ? '-90deg' : '0deg';
-  const mismatch = !!ref && refShot !== shot;
+  const mismatch = !!ghost && refShot !== shot;
+  useEffect(() => {
+    fovRef.current = fovFor(refShot === 'landscape');
+  }, [refShot]);
 
+  // Aim for the attitude the ghost photo was taken at (falls back to the station's).
   const target: Target = {
-    heading: station?.heading ?? null,
-    pitch: station?.pitch ?? null,
-    roll: station?.roll ?? null,
+    heading: ghost?.heading ?? station?.heading ?? null,
+    pitch: ghost?.pitch ?? station?.pitch ?? null,
+    roll: ghost?.roll ?? station?.roll ?? null,
   };
+  const deltas = live?.ok ? imageDeltas(live.g) : sensorDeltas(att, target, sideways);
+  const aligned = allAligned(deltas);
+  useEffect(() => {
+    if (aligned && !wasAligned.current) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    wasAligned.current = aligned;
+  }, [aligned]);
   const dist = fix && station ? distanceM(fix, { latitude: station.lat, longitude: station.lon }) : null;
 
   const shoot = async () => {
     if (!cam.current || busy || !station) return;
     setBusy(true);
+    busyRef.current = true;
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      if (liveInFlight.current) await liveInFlight.current.catch(() => {});
+      setFlash(true);
+      setTimeout(() => setFlash(false), 140);
       const takenAt = Date.now();
       const snap = { ...att };
       const snapShot = shotOf(snap.hold);
@@ -233,6 +400,8 @@ export default function CaptureScreen() {
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setLastSaved(fileUri);
+      setLastId(newId);
+      setCaps(await listCaptures(station.id));
       // Register to the reference in the background (EnvRevisit build only).
       if (alignmentAvailable) alignCapture(station.id, newId).catch((e) => console.warn('align', e));
     } catch (e) {
@@ -240,6 +409,7 @@ export default function CaptureScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setBusy(false);
+      busyRef.current = false;
     }
   };
 
@@ -256,7 +426,9 @@ export default function CaptureScreen() {
     );
   }
 
-  const ghostOpacity = mode === 'off' ? 0 : mode === 'flicker' ? (flickOn ? 1 : 0) : mode === 'split' ? 1 : amount;
+  const ghostOpacity =
+    mode === 'off' ? 0 : mode === 'flicker' ? (flickOn ? 1 : 0) : mode === 'split' ? 1 : mode === 'edges' ? 0 : amount;
+  const edgeUri = mode === 'edges' && edges && ghost && edges.id === ghost.id ? edges.uri : null;
 
   return (
     <View style={[styles.fill, { backgroundColor: '#000' }]}>
@@ -286,7 +458,7 @@ export default function CaptureScreen() {
             ref={cam}
             style={StyleSheet.absoluteFill}
             facing="back"
-            animateShutter
+            animateShutter={false}
             responsiveOrientationWhenOrientationLocked
             onCameraReady={() => setReady(true)}
           />
@@ -302,17 +474,36 @@ export default function CaptureScreen() {
               top: (boxH - physH) / 2,
               transform: [{ rotate: physRotate }],
             }}>
-            {ref && ghostOpacity > 0 && (
+            {ghost && ghostOpacity > 0 && (
               <View
                 style={[
                   StyleSheet.absoluteFill,
                   mode === 'split' && { right: undefined, width: physW * amount, overflow: 'hidden' },
                 ]}>
                 <Image
-                  source={{ uri: ref.uri }}
+                  source={{ uri: ghost.uri }}
                   style={{ width: physW, height: physH, opacity: ghostOpacity }}
                   contentFit="cover"
                 />
+              </View>
+            )}
+            {edgeUri && (
+              <Image
+                source={{ uri: edgeUri }}
+                style={[StyleSheet.absoluteFill, { opacity: 0.35 + 0.65 * amount }]}
+                contentFit="cover"
+                tintColor={EDGE_COLOURS[edgeColour]}
+              />
+            )}
+            {mode === 'edges' && !edgeUri && (
+              <View style={styles.notice}>
+                <Text style={styles.noticeText}>
+                  {!alignmentAvailable
+                    ? 'Edges need the EnvRevisit build'
+                    : edges && ghost && edges.id === ghost.id
+                      ? 'Could not make edges for this photo'
+                      : 'Preparing edges…'}
+                </Text>
               </View>
             )}
             {mode === 'split' && <View style={[styles.divider, { left: physW * amount - 1 }]} />}
@@ -328,8 +519,8 @@ export default function CaptureScreen() {
               </View>
             )}
 
-            <AlignmentGuide width={physW} height={physH} att={att} target={target} />
-            <GuideReadout att={att} target={target} />
+            <AlignmentGuide width={physW} height={physH} d={deltas} />
+            <GuideHud d={deltas} />
             {stamp.enabled && (
               <StampOverlay
                 lines={stampLines({ takenAt: now, note1: stamp.note1, note2: stamp.note2, showDate: stamp.showDate })}
@@ -353,6 +544,7 @@ export default function CaptureScreen() {
             )}
           </View>
 
+          {flash && <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(255,255,255,0.7)' }]} />}
           {!ready && (
             <View style={[StyleSheet.absoluteFill, styles.center]}>
               <ActivityIndicator color="#fff" />
@@ -363,12 +555,32 @@ export default function CaptureScreen() {
 
       <View style={{ paddingBottom: Math.max(insets.bottom, 12) }}>
         <View style={styles.modes}>
+          <Pill
+            label={`Ghost: ${ghost ? (ghost.id === refCap?.id ? 'Original' : fmtDate(ghost.taken_at)) : '—'} ▾`}
+            active
+            onPress={() => setPicking(true)}
+          />
+          {alignmentAvailable && (
+            <Pill label={liveOn ? '📷 Live match on' : '📷 Live match off'} active={liveOn} onPress={() => setLiveOn((v) => !v)} />
+          )}
           <Pill label={stamp.enabled ? '✎ Stamp on' : '✎ Stamp'} active={stamp.enabled} onPress={() => setEditingStamp(true)} />
-          {(['blend', 'split', 'flicker', 'off'] as Mode[]).map((m) => (
+        </View>
+        <View style={styles.modes}>
+          {MODES.map((m) => (
             <Pill key={m} label={m[0].toUpperCase() + m.slice(1)} active={mode === m} onPress={() => setMode(m)} />
           ))}
+          {mode === 'edges' && (
+            <Pressable
+              onPress={() => {
+                const n = (edgeColour + 1) % EDGE_COLOURS.length;
+                setEdgeColour(n);
+                kvSet('edgeColour', String(n));
+              }}
+              style={[styles.swatch, { backgroundColor: EDGE_COLOURS[edgeColour] }]}
+            />
+          )}
         </View>
-        {(mode === 'blend' || mode === 'split') && (
+        {(mode === 'blend' || mode === 'split' || mode === 'edges') && (
           <View style={{ paddingHorizontal: 24 }}>
             <Slider value={amount} onChange={setAmount} fillColor={c.accent} />
           </View>
@@ -389,7 +601,16 @@ export default function CaptureScreen() {
             style={[styles.shutter, (!ready || busy) && { opacity: 0.5 }]}>
             <View style={styles.shutterInner} />
           </Pressable>
-          <Pressable style={{ width: 64, alignItems: 'flex-end' }} onPress={() => router.replace(`/timeline/${sid}`)}>
+          <Pressable
+            style={{ width: 64, alignItems: 'flex-end' }}
+            onPress={() =>
+              lastId
+                ? router.push({
+                    pathname: '/timeline/[id]',
+                    params: { id: String(sid), a: String(ghost?.id ?? refCap?.id ?? ''), b: String(lastId), view: 'compare' },
+                  })
+                : router.push(`/timeline/${sid}`)
+            }>
             {lastSaved ? (
               <Image source={{ uri: lastSaved }} style={styles.lastThumb} contentFit="cover" />
             ) : (
@@ -409,6 +630,41 @@ export default function CaptureScreen() {
           onReady={onSnapReady}
         />
       )}
+      <Modal visible={picking} transparent animationType="slide" onRequestClose={() => setPicking(false)}>
+        <Pressable style={{ flex: 1 }} onPress={() => setPicking(false)} />
+        <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+          <Text style={styles.sheetTitle}>Line up with which photo?</Text>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {refCap && <Pill label="Original" active={ghost?.id === refCap.id} onPress={() => chooseGhost(refCap)} />}
+            {caps.length > 1 && (
+              <Pill label="Latest" active={ghost?.id === caps[caps.length - 1].id} onPress={() => chooseGhost('latest')} />
+            )}
+          </View>
+          <FlatList
+            horizontal
+            data={caps}
+            keyExtractor={(x) => String(x.id)}
+            contentContainerStyle={{ gap: 10 }}
+            showsHorizontalScrollIndicator={false}
+            renderItem={({ item }) => (
+              <Pressable onPress={() => chooseGhost(item)} style={{ width: 96 }}>
+                <Image
+                  source={{ uri: item.uri }}
+                  style={[styles.pickThumb, item.id === ghost?.id && { borderColor: c.accent }]}
+                  contentFit="cover"
+                />
+                <Text style={styles.pickLabel} numberOfLines={1}>
+                  {item.id === refCap?.id ? 'Original' : fmtDate(item.taken_at)}
+                </Text>
+                {item.id === refCap?.id && <Text style={styles.pickSub}>{fmtDate(item.taken_at)}</Text>}
+              </Pressable>
+            )}
+          />
+          <Text style={styles.pickHint}>
+            Remembered for this station. Alignment in the timeline always uses the station&apos;s reference photo.
+          </Text>
+        </View>
+      </Modal>
       {editingStamp && (
         <StampEditor visible initial={stamp} onClose={() => setEditingStamp(false)} onSave={saveStamp} />
       )}
@@ -423,7 +679,7 @@ const styles = StyleSheet.create({
   close: { color: '#fff', fontSize: 22, fontWeight: '600', width: 28, textAlign: 'center' },
   title: { color: '#fff', fontWeight: '700', fontSize: 15 },
   sub: { color: 'rgba(255,255,255,0.7)', fontSize: 12 },
-  modes: { flexDirection: 'row', justifyContent: 'center', gap: 8, paddingTop: 10 },
+  modes: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap', gap: 6, paddingTop: 8 },
   shutterRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -458,9 +714,32 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: 'rgba(255,255,255,0.45)',
   },
+  swatch: { width: 30, height: 30, borderRadius: 15, borderWidth: 2, borderColor: '#fff' },
+  notice: {
+    position: 'absolute',
+    alignSelf: 'center',
+    top: '45%',
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  noticeText: { color: '#fff', fontWeight: '700' },
+  sheet: {
+    backgroundColor: '#111',
+    padding: 16,
+    gap: 12,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+  },
+  sheetTitle: { color: '#fff', fontSize: 17, fontWeight: '800' },
+  pickThumb: { width: 96, height: 96, borderRadius: 10, borderWidth: 3, borderColor: 'transparent' },
+  pickLabel: { color: '#fff', fontSize: 12, fontWeight: '700', marginTop: 4 },
+  pickSub: { color: 'rgba(255,255,255,0.6)', fontSize: 11 },
+  pickHint: { color: 'rgba(255,255,255,0.6)', fontSize: 12 },
   mismatch: {
     position: 'absolute',
-    top: 112,
+    top: '40%',
     left: 10,
     right: 10,
     padding: 8,
