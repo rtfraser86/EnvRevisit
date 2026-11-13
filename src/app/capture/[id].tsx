@@ -1,12 +1,14 @@
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { CameraView, useCameraPermissions, type LensInfo } from 'expo-camera';
 import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';
+import { useKeepAwake } from 'expo-keep-awake';
 import { usePermissions as useMediaPermissions } from 'expo-media-library';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useRef, useState, type ComponentRef } from 'react';
+import { useCallback, useEffect, useRef, useState, type ComponentRef } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Modal,
   PixelRatio,
@@ -27,6 +29,7 @@ import {
   sensorDeltas,
   type Target,
 } from '@/components/alignment-guide';
+import { MarkerOverlay } from '@/components/markers';
 import { Slider } from '@/components/slider';
 import { StakeoutChip } from '@/components/stakeout';
 import {
@@ -41,12 +44,15 @@ import {
 import { Btn, Pill, fmtDate, useColors } from '@/components/ui';
 import {
   addCapture,
+  deleteStation,
   getStation,
   kvGet,
   kvSet,
   listCaptures,
+  parseMarkers,
   updateStation,
   type Capture,
+  type LensKind,
   type Station,
 } from '@/lib/db';
 import {
@@ -58,8 +64,7 @@ import {
   matchLiveFrame,
   type LiveMatch,
 } from '@/lib/align';
-import { distanceM, formatDistance } from '@/lib/geo';
-import { orientationOf } from '@/lib/library';
+import { orientationOf, readPose } from '@/lib/library';
 import { shotOf, useAttitude, usePosition } from '@/lib/sensors';
 import { persistCapture, saveToPhotosLibrary } from '@/lib/storage';
 
@@ -67,6 +72,20 @@ type Mode = 'blend' | 'edges' | 'split' | 'flicker' | 'off';
 const MODES: Mode[] = ['blend', 'edges', 'split', 'flicker', 'off'];
 const EDGE_COLOURS = ['#22D3EE', '#F472B6', '#FACC15', '#FFFFFF'];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const LENS: Record<LensKind, { label: string; f35: number }> = {
+  ultrawide: { label: '0.5×', f35: 13 },
+  wide: { label: '1×', f35: 26 },
+  tele: { label: 'Tele', f35: 77 },
+};
+const LENS_ORDER: LensKind[] = ['ultrawide', 'wide', 'tele'];
+function lensKind(deviceType: string): LensKind | null {
+  if (deviceType.includes('UltraWide')) return 'ultrawide';
+  if (deviceType.includes('Telephoto')) return 'tele';
+  if (deviceType.includes('WideAngle')) return 'wide';
+  return null; // virtual multi-lens devices
+}
+const kindFromFocal = (f35: number): LensKind => (f35 < 19 ? 'ultrawide' : f35 > 40 ? 'tele' : 'wide');
 
 export default function CaptureScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -106,8 +125,13 @@ export default function CaptureScreen() {
   const [snapJob, setSnapJob] = useState<{ uri: string; w: number; h: number; lines: string[] } | null>(null);
   const snapView = useRef<ComponentRef<typeof View>>(null);
   const snapResolve = useRef<((uri: string | null) => void) | null>(null);
+  const [lenses, setLenses] = useState<Partial<Record<LensKind, string>>>({});
+  const [lens, setLens] = useState<LensKind>('wide');
+  const [focused, setFocused] = useState(true);
+  const lensPicked = useRef(false); // true once the user chooses a lens by hand
   const att = useAttitude(true, 50);
   const { fix } = usePosition(true, true);
+  useKeepAwake(); // don't let the screen sleep while lining up
 
   useEffect(() => {
     getStation(sid).then(setStation);
@@ -120,6 +144,7 @@ export default function CaptureScreen() {
         saved === 'latest' ? list[list.length - 1] : list.find((x) => String(x.id) === saved) ?? ref;
       setGhostId(pick?.id ?? null);
     })();
+    kvGet('ghostMode').then((v) => v && (MODES as string[]).includes(v) && setMode(v as Mode));
     kvGet('saveToPhotos').then((v) => setSaveToPhotos(v !== '0'));
     kvGet('edgeColour').then((v) => v && setEdgeColour(Number(v) % EDGE_COLOURS.length));
     kvGet(`stamp:${sid}`).then((v) => {
@@ -181,6 +206,56 @@ export default function CaptureScreen() {
 
   const ghost = caps.find((x) => x.id === ghostId) ?? null;
   const refCap = caps.find((x) => x.is_reference) ?? caps[0] ?? null;
+  const markers = parseMarkers(ghost);
+
+  // Coming back from the marker editor or the timeline: pick up any changes.
+  // The camera and live matching pause while another screen is on top.
+  useFocusEffect(
+    useCallback(() => {
+      setFocused(true);
+      listCaptures(sid).then(setCaps);
+      return () => setFocused(false);
+    }, [sid])
+  );
+
+  const pickMode = (m: Mode) => {
+    setMode(m);
+    kvSet('ghostMode', m);
+  };
+
+  // Match the lens to the ghost photo (unless a lens was chosen by hand for this session).
+  const ghostLens = ghost?.lens ?? null;
+  const ghostLibraryUri = ghost?.source === 'library' ? ghost.uri : null;
+  useEffect(() => {
+    if (lensPicked.current || !ghostId) return;
+    let cancelled = false;
+    (async () => {
+      let want: LensKind | null = ghostLens;
+      if (!want && ghostLibraryUri) {
+        const pose = await readPose(ghostLibraryUri);
+        if (pose.focalLength35) want = kindFromFocal(pose.focalLength35);
+      }
+      if (!cancelled && want && lenses[want]) setLens(want);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ghostId, ghostLens, ghostLibraryUri, lenses]);
+
+  const applyLenses = (list: LensInfo[] | undefined) => {
+    const found: Partial<Record<LensKind, string>> = {};
+    for (const l of list ?? []) {
+      const k = lensKind(l.deviceType);
+      if (k && !found[k]) found[k] = l.deviceType;
+    }
+    if (Object.keys(found).length) setLenses(found);
+  };
+
+  const close = async () => {
+    // A brand-new station with no photo taken is just clutter: remove it.
+    if (caps.length === 0) await deleteStation(sid).catch(() => {});
+    router.back();
+  };
 
   const chooseGhost = (cap: Capture | 'latest') => {
     const pick = cap === 'latest' ? caps[caps.length - 1] : cap;
@@ -226,7 +301,7 @@ export default function CaptureScreen() {
 
   // Live image matching: grab a silent low-quality frame, register it against the ghost, repeat.
   useEffect(() => {
-    if (!liveOn || !ready || !ghostSmall) return;
+    if (!liveOn || !ready || !ghostSmall || !focused) return;
     let stop = false;
     (async () => {
       while (!stop) {
@@ -260,7 +335,7 @@ export default function CaptureScreen() {
     return () => {
       stop = true;
     };
-  }, [liveOn, ready, ghostSmall]);
+  }, [liveOn, ready, ghostSmall, focused]);
 
   // A live match goes stale after a few seconds without a fresh one.
   useEffect(() => {
@@ -274,11 +349,10 @@ export default function CaptureScreen() {
   // upright to the person holding it (ghost, grid, guide, readout) lives in a "physical
   // frame" rotated ±90°. The camera preview itself already looks upright, so it isn't rotated.
   const shot = shotOf(att.hold);
-  const refShot =
-    ghost?.orientation ??
-    orientationOf(ghost?.width ?? null, ghost?.height ?? null) ??
-    station?.orientation ??
-    'portrait';
+  // With no ghost yet (first photo of a new station) the frame follows how the phone is held.
+  const refShot = ghost
+    ? ghost.orientation ?? orientationOf(ghost.width, ghost.height) ?? station?.orientation ?? 'portrait'
+    : shot;
   const refAspect = // width / height as the ghost is viewed upright
     ghost?.width && ghost?.height ? ghost.width / ghost.height : refShot === 'landscape' ? 4 / 3 : 3 / 4;
   const sideways = shot === 'landscape';
@@ -294,9 +368,10 @@ export default function CaptureScreen() {
   const physH = sideways ? boxW : boxH;
   const physRotate = att.hold === 'cw' ? '90deg' : att.hold === 'ccw' ? '-90deg' : '0deg';
   const mismatch = !!ghost && refShot !== shot;
+  const f35 = LENS[lens].f35;
   useEffect(() => {
-    fovRef.current = fovFor(refShot === 'landscape');
-  }, [refShot]);
+    fovRef.current = fovFor(refShot === 'landscape', f35);
+  }, [refShot, f35]);
 
   // Aim for the attitude the ghost photo was taken at (falls back to the station's).
   const target: Target = {
@@ -304,13 +379,12 @@ export default function CaptureScreen() {
     pitch: ghost?.pitch ?? station?.pitch ?? null,
     roll: ghost?.roll ?? station?.roll ?? null,
   };
-  const deltas = live?.ok ? imageDeltas(live.g) : sensorDeltas(att, target, sideways);
+  const deltas = live?.ok ? imageDeltas(live.g) : sensorDeltas(att, target, sideways, f35);
   const aligned = allAligned(deltas);
   useEffect(() => {
     if (aligned && !wasAligned.current) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     wasAligned.current = aligned;
   }, [aligned]);
-  const dist = fix && station ? distanceM(fix, { latitude: station.lat, longitude: station.lon }) : null;
 
   const shoot = async () => {
     if (!cam.current || busy || !station) return;
@@ -322,6 +396,8 @@ export default function CaptureScreen() {
       setFlash(true);
       setTimeout(() => setFlash(false), 140);
       const takenAt = Date.now();
+      const first = caps.length === 0;
+      let st = station;
       const snap = { ...att };
       const snapShot = shotOf(snap.hold);
       const pos = fix;
@@ -382,21 +458,32 @@ export default function CaptureScreen() {
         note1: stamp.enabled ? stamp.note1.trim() || null : null,
         note2: stamp.enabled ? stamp.note2.trim() || null : null,
         stamp_date: stamp.enabled && stamp.showDate ? 1 : 0,
-        is_reference: 0,
+        lens,
+        is_reference: first ? 1 : 0,
       });
+      if (first) {
+        // New station: the first photo defines where to stand as well as the view.
+        if (pos) {
+          const place = { lat: pos.latitude, lon: pos.longitude };
+          await updateStation(station.id, place);
+          st = { ...st, ...place };
+          setStation(st);
+        }
+        setGhostId(newId);
+      }
 
       // A camera-roll reference has no pitch/roll. The first in-app capture taken the same
       // way round fills them in, so every later visit gets full 3-axis guidance.
-      const sameWay = (station.orientation ?? snapShot) === snapShot;
-      if (sameWay && (station.pitch == null || station.roll == null || station.heading == null || !station.orientation)) {
+      const sameWay = (st.orientation ?? snapShot) === snapShot;
+      if (sameWay && (st.pitch == null || st.roll == null || st.heading == null || !st.orientation)) {
         const patch = {
-          heading: station.heading ?? snap.heading,
-          pitch: station.pitch ?? snap.pitch,
-          roll: station.roll ?? snap.roll,
-          orientation: station.orientation ?? snapShot,
+          heading: st.heading ?? snap.heading,
+          pitch: st.pitch ?? snap.pitch,
+          roll: st.roll ?? snap.roll,
+          orientation: st.orientation ?? snapShot,
         };
-        await updateStation(station.id, patch);
-        setStation({ ...station, ...patch });
+        await updateStation(st.id, patch);
+        setStation({ ...st, ...patch });
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setLastSaved(fileUri);
@@ -407,6 +494,7 @@ export default function CaptureScreen() {
     } catch (e) {
       console.warn(e);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Photo not saved', String(e instanceof Error ? e.message : e));
     } finally {
       setBusy(false);
       busyRef.current = false;
@@ -434,18 +522,22 @@ export default function CaptureScreen() {
     <View style={[styles.fill, { backgroundColor: '#000' }]}>
       <StatusBar hidden />
       <View style={[styles.topRow, { paddingTop: Math.max(insets.top, 12) }]}>
-        <Pressable onPress={() => router.back()} hitSlop={12}>
+        <Pressable onPress={close} hitSlop={12}>
           <Text style={styles.close}>✕</Text>
         </Pressable>
         <View style={{ flex: 1, alignItems: 'center' }}>
           <Text style={styles.title} numberOfLines={1}>
             {station?.name ?? ''}
           </Text>
-          <Text style={styles.sub}>
-            {dist == null
-              ? 'Waiting for GPS…'
-              : `${formatDistance(dist)} from station${fix?.accuracy != null ? ` · ±${fix.accuracy.toFixed(0)} m` : ''}`}
-          </Text>
+          {ghost ? (
+            <Pressable onPress={() => setPicking(true)} hitSlop={8} style={styles.ghostPick}>
+              <Text style={styles.ghostPickText} numberOfLines={1}>
+                Lining up with: {ghost.id === refCap?.id ? `Original (${fmtDate(ghost.taken_at)})` : fmtDate(ghost.taken_at)} ▾
+              </Text>
+            </Pressable>
+          ) : (
+            <Text style={styles.sub}>New station</Text>
+          )}
         </View>
         <Pressable onPress={() => setGrid((g) => !g)} hitSlop={12}>
           <Text style={[styles.close, { fontSize: 16, opacity: grid ? 1 : 0.5 }]}>#</Text>
@@ -458,9 +550,16 @@ export default function CaptureScreen() {
             ref={cam}
             style={StyleSheet.absoluteFill}
             facing="back"
+            active={focused}
             animateShutter={false}
+            selectedLens={lens === 'wide' ? undefined : lenses[lens]}
+            onAvailableLensesChanged={(e: { lenses: LensInfo[] }) => applyLenses(e.lenses)}
             responsiveOrientationWhenOrientationLocked
-            onCameraReady={() => setReady(true)}
+            onCameraReady={() => {
+              setReady(true);
+              // The lens list event isn't guaranteed to fire on mount, so ask as well.
+              cam.current?.getAvailableLensesAsync?.().then(applyLenses).catch(() => {});
+            }}
           />
 
           {/* Physical frame: rotated so overlays look upright however the phone is held. */}
@@ -519,8 +618,14 @@ export default function CaptureScreen() {
               </View>
             )}
 
-            <AlignmentGuide width={physW} height={physH} d={deltas} />
-            <GuideHud d={deltas} />
+            <MarkerOverlay markers={markers} width={physW} height={physH} />
+            {!ghost && (
+              <View style={styles.notice}>
+                <Text style={styles.noticeText}>First photo — this becomes the reference</Text>
+              </View>
+            )}
+            {ghost && <AlignmentGuide width={physW} height={physH} d={deltas} />}
+            {ghost && <GuideHud d={deltas} />}
             {stamp.enabled && (
               <StampOverlay
                 lines={stampLines({ takenAt: now, note1: stamp.note1, note2: stamp.note2, showDate: stamp.showDate })}
@@ -544,6 +649,23 @@ export default function CaptureScreen() {
             )}
           </View>
 
+          {LENS_ORDER.filter((k) => lenses[k]).length > 1 && (
+            <View style={styles.lensRow} pointerEvents="box-none">
+              {LENS_ORDER.filter((k) => lenses[k]).map((k) => (
+                <Pressable
+                  key={k}
+                  hitSlop={6}
+                  onPress={() => {
+                    lensPicked.current = true;
+                    setLens(k);
+                    setLive(null);
+                  }}
+                  style={[styles.lensBtn, lens === k && { backgroundColor: '#FACC15' }]}>
+                  <Text style={[styles.lensText, lens === k && { color: '#000' }]}>{LENS[k].label}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
           {flash && <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(255,255,255,0.7)' }]} />}
           {!ready && (
             <View style={[StyleSheet.absoluteFill, styles.center]}>
@@ -555,21 +677,24 @@ export default function CaptureScreen() {
 
       <View style={{ paddingBottom: Math.max(insets.bottom, 12) }}>
         <View style={styles.modes}>
-          <Pill
-            label={`Ghost: ${ghost ? (ghost.id === refCap?.id ? 'Original' : fmtDate(ghost.taken_at)) : '—'} ▾`}
-            active
-            onPress={() => setPicking(true)}
-          />
-          {alignmentAvailable && (
-            <Pill label={liveOn ? '📷 Live match on' : '📷 Live match off'} active={liveOn} onPress={() => setLiveOn((v) => !v)} />
+          {alignmentAvailable && ghost && (
+            <Pill label="📷 Live match" active={liveOn} onPress={() => setLiveOn((v) => !v)} />
+          )}
+          {ghost && (
+            <Pill
+              label={markers.length ? `⌖ Markers (${markers.length})` : '⌖ Markers'}
+              active={markers.length > 0}
+              onPress={() => router.push(`/markers/${ghost.id}`)}
+            />
           )}
           <Pill label={stamp.enabled ? '✎ Stamp on' : '✎ Stamp'} active={stamp.enabled} onPress={() => setEditingStamp(true)} />
         </View>
         <View style={styles.modes}>
-          {MODES.map((m) => (
-            <Pill key={m} label={m[0].toUpperCase() + m.slice(1)} active={mode === m} onPress={() => setMode(m)} />
-          ))}
-          {mode === 'edges' && (
+          {ghost &&
+            MODES.map((m) => (
+              <Pill key={m} label={m[0].toUpperCase() + m.slice(1)} active={mode === m} onPress={() => pickMode(m)} />
+            ))}
+          {ghost && mode === 'edges' && (
             <Pressable
               onPress={() => {
                 const n = (edgeColour + 1) % EDGE_COLOURS.length;
@@ -580,7 +705,7 @@ export default function CaptureScreen() {
             />
           )}
         </View>
-        {(mode === 'blend' || mode === 'split' || mode === 'edges') && (
+        {ghost && (mode === 'blend' || mode === 'split' || mode === 'edges') && (
           <View style={{ paddingHorizontal: 24 }}>
             <Slider value={amount} onChange={setAmount} fillColor={c.accent} />
           </View>
@@ -612,10 +737,13 @@ export default function CaptureScreen() {
                 : router.push(`/timeline/${sid}`)
             }>
             {lastSaved ? (
-              <Image source={{ uri: lastSaved }} style={styles.lastThumb} contentFit="cover" />
-            ) : (
+              <View style={{ alignItems: 'center' }}>
+                <Image source={{ uri: lastSaved }} style={styles.lastThumb} contentFit="cover" />
+                <Text style={[styles.small, { fontWeight: '800', marginTop: 2 }]}>Check ›</Text>
+              </View>
+            ) : caps.length ? (
               <Text style={styles.small}>Timeline</Text>
-            )}
+            ) : null}
           </Pressable>
         </View>
       </View>
@@ -714,6 +842,33 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: 'rgba(255,255,255,0.45)',
   },
+  ghostPick: {
+    marginTop: 2,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.16)',
+  },
+  ghostPickText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  lensRow: {
+    position: 'absolute',
+    bottom: 8,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  lensBtn: {
+    minWidth: 38,
+    height: 30,
+    paddingHorizontal: 8,
+    borderRadius: 15,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  lensText: { color: '#fff', fontWeight: '800', fontSize: 12 },
   swatch: { width: 30, height: 30, borderRadius: 15, borderWidth: 2, borderColor: '#fff' },
   notice: {
     position: 'absolute',

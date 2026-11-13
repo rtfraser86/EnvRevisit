@@ -34,12 +34,20 @@ Edit any file in `src/` and the app reloads on the phone.
 
 | Screen | What it does |
 |---|---|
-| **Map** (`src/app/index.tsx`) | Indexes geotagged photos (incremental after the first scan), clusters them on a satellite map, shows stations as green diamonds. When you're within 150 m of earlier photos it zooms to them and lists them, nearest first. |
+| **Map** (`src/app/index.tsx`) | Indexes geotagged photos (incremental after the first scan), clusters them on a satellite map, shows stations as green diamonds. When you're within 150 m of earlier photos it zooms to them and lists them, nearest first. **＋ New station** starts a station where you're standing (the first photo becomes the reference). **? Help** shows a short how-it-works guide. |
 | **Photo** | Shows date, position, GPS accuracy and camera heading read from EXIF. "Revisit this spot" creates a station with that photo as the reference. |
 | **Station** | The time series. Long-press a photo to make it the alignment reference or remove it. "+ Add older photos" pulls in other camera-roll shots taken within 15–250 m. Exports a CSV capture log. |
 | **Navigate** | Stake-out style: north-up satellite map with an arrow at your position always pointing to the photo point, a dashed line to it, a green circle showing the GPS "on the point" radius, and a HUD with distance, bearing and N/E offsets. Below the map, a compass-relative arrow with "x m ahead · y m left". Haptic buzz when you're on the point. Pan the map to stop auto-follow; tap Re-centre to resume. |
 | **Capture** | Camera framed to the ghost photo's shape. **Ghost ▾** picks which earlier photo to line up with (Original, Latest or any date; remembered per station). Ghost modes: **Blend** (opacity slider), **Edges** (outline of the old photo in a colour you choose: tap the swatch), **Split**, **Flicker**, **Off**. A guidance band shows Turn / Tilt / Rotate (and Distance) in big colour-coded boxes; the yellow ring shows where the ghost's centre is, and the bar shows the roll. A green **Lined up** banner and a buzz tell you when to shoot. **📷 Live match** (EnvRevisit build) compares the camera view with the ghost about once a second and drives the guidance from the image itself, which is far more precise than the compass. Without a confident match it falls back to the compass and tilt sensors. A stake-out chip shows the GPS offset. **✎ Stamp** adds notes/date. After shooting, tap the thumbnail to flick between the ghost and the new photo. |
 | **Timeline** | **Swipe** between dates, **Scrub** a slider that cross-fades through the whole series, or **Compare** any two dates by **Split**, **Blend** or **Flicker**. **Aligned / As shot** switches between registered and original photos. |
+
+### Alignment markers
+- On a station tap **⌖ Add markers** (or **⌖ Markers** on the camera screen) and tap up to 8 fixed features on the old photo: a rock, a fence post, a notch on the skyline. Pinch to zoom; tap a marker to remove it. Changes save as you go.
+- The markers appear as numbered, coloured rings over the live camera, in every ghost mode (including **Off**), so you can put each ring on the same feature.
+- Markers belong to a photo, so each ghost photo can have its own set.
+
+### Lenses
+- The camera shows **0.5× / 1× / Tele** buttons when the phone has more than one rear lens. The lens is matched automatically to the ghost photo (from the lens recorded for in-app photos, or the focal length in a camera-roll photo's EXIF), and the lens used is stored with each new photo.
 
 ### Stamps (notes + date)
 - Tap **✎ Stamp** on the camera screen to turn stamping on, type up to two note lines and choose whether to show the date and time. Settings are remembered per station.
@@ -72,7 +80,7 @@ All data stays on the phone in SQLite (`revisit.db`). Tables: `photos` (camera-r
 ## Known limits of this build
 - Automatic alignment needs the EnvRevisit build (see below), not Expo Go.
 - On-screen buttons stay in portrait position when you turn the phone sideways (the overlays rotate; the controls don't).
-- **Lens**: the camera opens at 1×. A reference shot at 0.5× or 2× won't line up yet.
+- **Zoom**: the three fixed lenses are supported, but not in-between digital zoom levels (e.g. a reference shot at 2× on a phone without a 2× lens).
 - iCloud-only originals may be slow to appear the first time.
 
 ---

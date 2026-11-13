@@ -34,7 +34,7 @@ export default function StationsScreen() {
       keyExtractor={(s) => String(s.id)}
       ListEmptyComponent={
         <Text style={{ color: c.muted, textAlign: 'center', marginTop: 40, paddingHorizontal: 30 }}>
-          No stations yet. Tap a photo on the map and choose “Revisit this spot” to start a time series.
+          No stations yet. Tap a photo on the map and create a station from it, or tap “New station” on the map to start one where you are standing.
         </Text>
       }
       renderItem={({ item: s }) => (

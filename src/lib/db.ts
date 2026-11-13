@@ -1,3 +1,4 @@
+import { Paths } from 'expo-file-system';
 import * as SQLite from 'expo-sqlite';
 
 /**
@@ -52,8 +53,40 @@ export type Capture = {
   aligned_uri?: string | null; // copy warped into the reference frame
   align_status?: 'ok' | 'failed' | null;
   align_inliers?: number | null;
+  /** JSON array of alignment markers, [{x, y}] as fractions of the upright photo (0–1). */
+  markers?: string | null;
+  /** Lens used for an in-app photo. */
+  lens?: LensKind | null;
   is_reference: number; // 0/1
 };
+
+export type LensKind = 'ultrawide' | 'wide' | 'tele';
+export type MarkerPt = { x: number; y: number };
+
+export function parseMarkers(cap: Pick<Capture, 'markers'> | null | undefined): MarkerPt[] {
+  if (!cap?.markers) return [];
+  try {
+    const v = JSON.parse(cap.markers);
+    return Array.isArray(v) ? v.filter((m) => Number.isFinite(m?.x) && Number.isFinite(m?.y)) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * iOS gives the app a new container path whenever a new build is installed, so absolute
+ * file:// paths saved earlier stop working. Files in Documents survive, so re-point any stored
+ * ".../Documents/<rest>" path at the current Documents folder.
+ */
+export function resolveUri<T extends string | null | undefined>(uri: T): T {
+  if (!uri || !uri.startsWith('file:')) return uri;
+  const i = uri.indexOf('/Documents/');
+  if (i < 0) return uri;
+  const base = Paths.document.uri.endsWith('/') ? Paths.document.uri : `${Paths.document.uri}/`;
+  return (base + uri.slice(i + '/Documents/'.length)) as T;
+}
+
+const fixCapture = (c: Capture): Capture => ({ ...c, uri: resolveUri(c.uri), aligned_uri: resolveUri(c.aligned_uri) });
 
 export type StationWithStats = Station & {
   n: number;
@@ -119,6 +152,9 @@ export function getDb() {
         ['captures', 'aligned_uri', 'TEXT'],
         ['captures', 'align_status', 'TEXT'],
         ['captures', 'align_inliers', 'INTEGER'],
+        // v0.5: alignment markers and lens
+        ['captures', 'markers', 'TEXT'],
+        ['captures', 'lens', 'TEXT'],
       ];
       for (const [table, col, type] of addCols) {
         const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
@@ -205,7 +241,7 @@ export async function getStation(id: number): Promise<Station | null> {
 }
 export async function listStations(): Promise<StationWithStats[]> {
   const db = await getDb();
-  return db.getAllAsync<StationWithStats>(`
+  const rows = await db.getAllAsync<StationWithStats>(`
     SELECT s.*,
       (SELECT COUNT(*) FROM captures c WHERE c.station_id = s.id) AS n,
       (SELECT MIN(taken_at) FROM captures c WHERE c.station_id = s.id) AS first,
@@ -213,33 +249,45 @@ export async function listStations(): Promise<StationWithStats[]> {
       (SELECT uri FROM captures c WHERE c.station_id = s.id
          ORDER BY is_reference DESC, taken_at ASC LIMIT 1) AS ref_uri
     FROM stations s ORDER BY s.created DESC`);
+  return rows.map((r) => ({ ...r, ref_uri: resolveUri(r.ref_uri) }));
 }
 
 // ---------- captures ----------
 export async function addCapture(c: Omit<Capture, 'id'>): Promise<number> {
   const db = await getDb();
   const r = await db.runAsync(
-    `INSERT INTO captures (station_id, uri, source, taken_at, lat, lon, accuracy, heading, pitch, roll, width, height, orientation, note1, note2, stamp_date, is_reference)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO captures (station_id, uri, source, taken_at, lat, lon, accuracy, heading, pitch, roll, width, height, orientation, note1, note2, stamp_date, lens, is_reference)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     c.station_id, c.uri, c.source, c.taken_at, c.lat, c.lon, c.accuracy,
     c.heading, c.pitch, c.roll, c.width, c.height, c.orientation,
-    c.note1 ?? null, c.note2 ?? null, c.stamp_date ?? 0, c.is_reference
+    c.note1 ?? null, c.note2 ?? null, c.stamp_date ?? 0, c.lens ?? null, c.is_reference
   );
   return r.lastInsertRowId;
 }
 export async function listCaptures(stationId: number): Promise<Capture[]> {
   const db = await getDb();
-  return db.getAllAsync<Capture>(
+  const rows = await db.getAllAsync<Capture>(
     'SELECT * FROM captures WHERE station_id = ? ORDER BY taken_at ASC',
     stationId
   );
+  return rows.map(fixCapture);
+}
+export async function getCapture(id: number): Promise<Capture | null> {
+  const db = await getDb();
+  const r = await db.getFirstAsync<Capture>('SELECT * FROM captures WHERE id = ?', id);
+  return r ? fixCapture(r) : null;
+}
+export async function setMarkers(id: number, markers: MarkerPt[]) {
+  const db = await getDb();
+  await db.runAsync('UPDATE captures SET markers = ? WHERE id = ?', markers.length ? JSON.stringify(markers) : null, id);
 }
 export async function getReference(stationId: number): Promise<Capture | null> {
   const db = await getDb();
-  return db.getFirstAsync<Capture>(
+  const r = await db.getFirstAsync<Capture>(
     'SELECT * FROM captures WHERE station_id = ? ORDER BY is_reference DESC, taken_at ASC LIMIT 1',
     stationId
   );
+  return r ? fixCapture(r) : null;
 }
 export async function setReference(stationId: number, captureId: number) {
   const db = await getDb();

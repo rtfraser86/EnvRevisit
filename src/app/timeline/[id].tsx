@@ -1,7 +1,9 @@
 import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import * as Sharing from 'expo-sharing';
+import { useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
+import { Alert, FlatList, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { captureRef } from 'react-native-view-shot';
 
 import { Slider } from '@/components/slider';
 import { StampOverlay, stampLines } from '@/components/stamp';
@@ -34,7 +36,19 @@ export default function Timeline() {
   const [split, setSplit] = useState(0.5);
   const [a, setA] = useState(0); // compare: left/before
   const [b, setB] = useState(0); // compare: right/after
+  const [slot, setSlot] = useState<'a' | 'b'>('a'); // compare: which side the next thumbnail tap sets
   const listRef = useRef<FlatList<Capture>>(null);
+  const shotRef = useRef<ComponentRef<typeof View>>(null);
+
+  /** Share the picture currently on screen (with its date labels and stamps). */
+  const shareView = async () => {
+    try {
+      const uri = await captureRef(shotRef as Parameters<typeof captureRef>[0], { format: 'jpg', quality: 0.92 });
+      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri, { mimeType: 'image/jpeg', UTI: 'public.jpeg' });
+    } catch (e) {
+      Alert.alert('Could not share', String(e instanceof Error ? e.message : e));
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -130,9 +144,10 @@ export default function Timeline() {
           <Pill label={useAligned ? 'Aligned' : 'As shot'} active={useAligned} onPress={() => setUseAligned((v) => !v)} />
         )}
         {hasStamps && <Pill label={showStamps ? 'Stamps on' : 'Stamps off'} active={showStamps} onPress={toggleStamps} />}
+        <Pill label="Share" onPress={shareView} />
       </View>
 
-      <View style={{ alignItems: 'center' }}>
+      <View ref={shotRef} collapsable={false} style={{ alignItems: 'center', backgroundColor: '#000' }}>
         {mode === 'swipe' && (
           <FlatList
             ref={listRef}
@@ -148,6 +163,7 @@ export default function Timeline() {
               <View style={{ width: winW, alignItems: 'center' }}>
                 <View style={{ width: frameW, height: frameH }}>
                   {img(pick(item))}
+                  {!(showStamps && item.stamp_date) && <Text style={[styles.tag, { left: 8 }]}>{fmtDate(item.taken_at)}</Text>}
                   {stampFor(item)}
                 </View>
               </View>
@@ -159,6 +175,9 @@ export default function Timeline() {
           <View style={{ width: frameW, height: frameH }}>
             {img(pick(caps[lo]))}
             {hi !== lo && img(pick(caps[hi]), frac)}
+            {!(showStamps && scrubLabel?.stamp_date) && (
+              <Text style={[styles.tag, { left: 8 }]}>{fmtDate(scrubLabel?.taken_at)}</Text>
+            )}
             {stampFor(caps[frac < 0.5 ? lo : hi])}
           </View>
         )}
@@ -227,7 +246,24 @@ export default function Timeline() {
             {cmp !== 'flicker' && (
               <Slider value={split} onChange={setSplit} trackColor={c.line} fillColor={c.accent} thumbColor={c.text} />
             )}
-            <Text style={{ color: c.muted }}>Tap thumbnails: first tap sets the left (before) image, second tap sets the right (after).</Text>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              {(['a', 'b'] as const).map((k) => {
+                const cap = caps[k === 'a' ? a : b];
+                const on = slot === k;
+                return (
+                  <Pressable
+                    key={k}
+                    onPress={() => setSlot(k)}
+                    style={[styles.slot, { borderColor: on ? c.accent : c.line, backgroundColor: c.card }]}>
+                    <Text style={{ color: c.muted, fontSize: 11, fontWeight: '700' }}>{k === 'a' ? 'BEFORE' : 'AFTER'}</Text>
+                    <Text style={{ color: c.text, fontWeight: '700' }}>{fmtDate(cap?.taken_at)}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text style={{ color: c.muted, fontSize: 12 }}>
+              Tap Before or After, then tap a photo below to change it.
+            </Text>
           </>
         )}
 
@@ -244,8 +280,13 @@ export default function Timeline() {
                     listRef.current?.scrollToIndex({ index: i, animated: true });
                   } else if (mode === 'scrub') {
                     setScrub(caps.length > 1 ? i / (caps.length - 1) : 0);
-                  } else if (i < b) setA(i);
-                  else setB(i);
+                  } else if (slot === 'a') {
+                    setA(i);
+                    setSlot('b');
+                  } else {
+                    setB(i);
+                    setSlot('a');
+                  }
                 }}>
                 <Image
                   source={{ uri: cap.uri }}
@@ -269,7 +310,7 @@ export default function Timeline() {
 }
 
 const styles = StyleSheet.create({
-  modes: { flexDirection: 'row', justifyContent: 'center', gap: 8, paddingVertical: 10 },
+  modes: { flexDirection: 'row', justifyContent: 'center', flexWrap: 'wrap', gap: 6, paddingVertical: 8, paddingHorizontal: 8 },
   divider: { position: 'absolute', top: 0, bottom: 0, width: 2, backgroundColor: '#fff' },
   tag: {
     position: 'absolute',
@@ -284,4 +325,5 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   thumb: { width: 64, height: 64, borderRadius: 8, borderWidth: 3 },
+  slot: { flex: 1, borderWidth: 2, borderRadius: 10, paddingVertical: 6, paddingHorizontal: 10 },
 });

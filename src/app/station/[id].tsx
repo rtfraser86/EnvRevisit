@@ -10,6 +10,7 @@ import {
   deleteStation,
   getStation,
   listCaptures,
+  parseMarkers,
   setReference,
   updateCaptureStamp,
   updateStation,
@@ -59,13 +60,17 @@ export default function StationScreen() {
     );
 
   const onCaptureMenu = (cap: Capture) => {
-    const options = ['Edit stamp notes', 'Use as alignment reference', 'Remove from station', 'Cancel'];
+    const options = ['Alignment markers', 'Edit stamp notes', 'Use as alignment reference', 'Remove from station', 'Cancel'];
     const act = async (i: number) => {
       if (i === 0) {
-        setEditing(cap);
+        router.push(`/markers/${cap.id}`);
         return;
       }
       if (i === 1) {
+        setEditing(cap);
+        return;
+      }
+      if (i === 2) {
         await setReference(sid, cap.id);
         // The reference also defines where to stand / which way to look.
         await updateStation(sid, {
@@ -82,22 +87,40 @@ export default function StationScreen() {
           runAlign();
           return;
         }
-      } else if (i === 2) {
-        await deleteCapture(cap.id);
-        deleteCaptureFile(cap);
+      } else if (i === 3) {
+        Alert.alert(
+          'Remove this photo from the station?',
+          cap.source === 'app'
+            ? 'The copy kept by EnvRevisit is deleted. A copy saved to Photos is not affected.'
+            : 'The photo stays in your camera roll.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Remove',
+              style: 'destructive',
+              onPress: async () => {
+                await deleteCapture(cap.id);
+                deleteCaptureFile(cap);
+                load();
+              },
+            },
+          ]
+        );
+        return;
       }
       load();
     };
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
-        { options, destructiveButtonIndex: 2, cancelButtonIndex: 3, title: fmtDate(cap.taken_at) },
+        { options, destructiveButtonIndex: 3, cancelButtonIndex: 4, title: fmtDate(cap.taken_at) },
         act
       );
     } else {
       Alert.alert(fmtDate(cap.taken_at), undefined, [
         { text: options[0], onPress: () => act(0) },
         { text: options[1], onPress: () => act(1) },
-        { text: options[2], style: 'destructive', onPress: () => act(2) },
+        { text: options[2], onPress: () => act(2) },
+        { text: options[3], style: 'destructive', onPress: () => act(3) },
         { text: 'Cancel', style: 'cancel' },
       ]);
     }
@@ -179,12 +202,22 @@ export default function StationScreen() {
         <Btn title="Navigate" kind="secondary" style={{ flex: 1 }} onPress={() => router.push(`/navigate/${sid}`)} />
         <Btn title="Retake now" style={{ flex: 1 }} onPress={() => router.push(`/capture/${sid}`)} />
       </View>
-      <Btn
-        title={`Timeline viewer (${caps.length})`}
-        kind="secondary"
-        disabled={caps.length < 1}
-        onPress={() => router.push(`/timeline/${sid}`)}
-      />
+      <View style={{ flexDirection: 'row', gap: 10 }}>
+        <Btn
+          title={`Timeline (${caps.length})`}
+          kind="secondary"
+          style={{ flex: 1 }}
+          disabled={caps.length < 1}
+          onPress={() => router.push(`/timeline/${sid}`)}
+        />
+        <Btn
+          title={ref && parseMarkers(ref).length ? `⌖ Markers (${parseMarkers(ref).length})` : '⌖ Add markers'}
+          kind="secondary"
+          style={{ flex: 1 }}
+          disabled={!ref}
+          onPress={() => ref && router.push(`/markers/${ref.id}`)}
+        />
+      </View>
 
       <View style={styles.sectionHead}>
         <Text style={{ color: c.text, fontWeight: '700', fontSize: 17 }}>Time series</Text>
@@ -194,7 +227,11 @@ export default function StationScreen() {
       </View>
       <View style={styles.grid}>
         {caps.map((cap) => (
-          <Pressable key={cap.id} style={styles.cell} onPress={() => router.push({ pathname: '/timeline/[id]', params: { id: String(sid), start: String(cap.id) } })} onLongPress={() => onCaptureMenu(cap)}>
+          <Pressable
+            key={cap.id}
+            style={styles.cell}
+            onPress={() => router.push({ pathname: '/timeline/[id]', params: { id: String(sid), start: String(cap.id) } })}
+            onLongPress={() => onCaptureMenu(cap)}>
             <View>
               <Image source={{ uri: cap.uri }} style={styles.cellImg} contentFit="cover" recyclingKey={cap.uri} />
               {cap.align_status && !cap.is_reference && (
@@ -213,12 +250,17 @@ export default function StationScreen() {
                 <Text style={{ color: c.accentText, fontSize: 9, fontWeight: '800' }}>REF</Text>
               </View>
             )}
-            <Text style={{ color: c.text, fontSize: 12, marginTop: 3 }}>{fmtDate(cap.taken_at)}</Text>
+            <View style={styles.cellFoot}>
+              <Text style={{ color: c.text, fontSize: 12 }}>{fmtDate(cap.taken_at)}</Text>
+              <Pressable onPress={() => onCaptureMenu(cap)} hitSlop={10}>
+                <Text style={{ color: c.muted, fontSize: 16, fontWeight: '900' }}>⋯</Text>
+              </Pressable>
+            </View>
           </Pressable>
         ))}
       </View>
       <Text style={{ color: c.muted, fontSize: 12 }}>
-        Long-press a photo to edit its stamp notes, make it the alignment reference, or remove it.
+        Tap ⋯ under a photo for markers, stamp notes, making it the reference, or removing it.
       </Text>
       {hasStamps && (
         <View style={[styles.switchRow, { borderColor: c.line, backgroundColor: c.card }]}>
@@ -278,6 +320,7 @@ const styles = StyleSheet.create({
   sectionHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   cell: { width: '31.5%' },
+  cellFoot: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 3 },
   cellImg: { width: '100%', aspectRatio: 1, borderRadius: 8 },
   switchRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: 12, borderWidth: 1 },
   alignBadge: { position: 'absolute', left: 4, bottom: 4, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 3 },

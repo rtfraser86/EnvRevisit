@@ -2,15 +2,23 @@ import { Image } from 'expo-image';
 import { usePermissions } from 'expo-media-library';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import MapView, { Marker, type Region } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Btn, Pill, fmtDate, useColors } from '@/components/ui';
-import { allPhotos, listStations, type PhotoRow, type StationWithStats } from '@/lib/db';
+import { allPhotos, createStation, kvGet, kvSet, listStations, type PhotoRow, type StationWithStats } from '@/lib/db';
 import { distanceM, formatDistance } from '@/lib/geo';
 import { scanLibrary, type ScanProgress } from '@/lib/library';
 import { usePosition } from '@/lib/sensors';
+
+const HELP: [string, string][] = [
+  ['Find a photo', 'Blue dots are your geotagged camera-roll photos. Tap a dot, or a photo in the "Near you" strip.'],
+  ['Make it a station', 'A station is one photo point and its series of repeat photos. Create one from an old photo, or tap "New station" to start one where you are standing.'],
+  ['Walk back to it', 'Navigate shows an arrow and the distance to the point. GPS gets you within a few metres.'],
+  ['Line up the shot', 'The camera shows the old photo as a ghost. Follow the Turn / Tilt / Rotate boxes until they go green. Add markers to the old photo to pin fixed features such as rocks or posts.'],
+  ['Compare over time', 'The timeline lets you swipe, scrub or flicker between dates. Photos are aligned to the reference automatically.'],
+];
 
 const NEAR_RADIUS_M = 150; // "you're near photos you took before" threshold
 const STRIP_MAX = 40;
@@ -54,6 +62,17 @@ export default function MapScreen() {
   const [scan, setScan] = useState<ScanProgress | null>(null);
   const [satellite, setSatellite] = useState(true);
   const [selection, setSelection] = useState<string[] | null>(null); // ids picked from a cluster
+  const [help, setHelp] = useState(false);
+
+  // Show the how-it-works sheet once, on first launch.
+  useEffect(() => {
+    kvGet('helpSeen').then((v) => {
+      if (!v) {
+        setHelp(true);
+        kvSet('helpSeen', '1');
+      }
+    });
+  }, []);
   const { fix } = usePosition(true, false);
   const zoomedToNear = useRef(false);
 
@@ -121,6 +140,33 @@ export default function MapScreen() {
   }, [fix, near]);
 
   const clusters = useMemo(() => clusterPhotos(photos, region), [photos, region]);
+
+  /** Start a station from scratch: the first photo you take becomes the reference. */
+  const newStation = () => {
+    if (!fix) {
+      Alert.alert('Waiting for GPS', 'Your position is needed to place the new station. Try again in a moment.');
+      return;
+    }
+    const create = async (name?: string) => {
+      const sid = await createStation({
+        name: name?.trim() || `Station ${new Date().toLocaleDateString()}`,
+        lat: fix.latitude,
+        lon: fix.longitude,
+        heading: null,
+        pitch: null,
+        roll: null,
+        orientation: null,
+        notes: null,
+      });
+      router.push(`/capture/${sid}`);
+    };
+    if (Alert.prompt) {
+      Alert.prompt('New station here', 'Name this photo point. The first photo you take becomes the reference.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Open camera', onPress: (t?: string) => create(t) },
+      ]);
+    } else create();
+  };
 
   const onClusterPress = (cl: Cluster) => {
     if (cl.ids.length <= 12 || (region && region.longitudeDelta < 0.002)) {
@@ -220,7 +266,7 @@ export default function MapScreen() {
         })}
         {stations.map((s) => (
           <Marker
-            key={`s${s.id}`}
+            key={`s${s.id}:${s.n}`}
             coordinate={{ latitude: s.lat, longitude: s.lon }}
             tracksViewChanges={false}
             onPress={(e) => {
@@ -240,10 +286,11 @@ export default function MapScreen() {
         <View style={styles.topRow} pointerEvents="box-none">
           <Pill label={satellite ? 'Satellite' : 'Map'} active={satellite} onPress={() => setSatellite((v) => !v)} />
           <Pill
-            label={scan && !scan.done ? `Scanning… ${scan.scanned}` : scan?.done ? `+${scan.geotagged} geotagged` : `${photos.length} photos`}
+            label={scan && !scan.done ? `Scanning… ${scan.scanned}` : scan?.done ? `+${scan.geotagged} geotagged` : `⟳ ${photos.length} photos`}
             onPress={() => !scan && runScan(false)}
           />
           {perm?.accessPrivileges === 'limited' && <Pill label="Limited access" onPress={() => requestPerm()} />}
+          <Pill label="?  Help" onPress={() => setHelp(true)} />
         </View>
       </SafeAreaView>
 
@@ -300,9 +347,10 @@ export default function MapScreen() {
           </View>
         )}
         <View style={styles.actions}>
-          <Btn title="Stations" kind="secondary" onPress={() => router.push('/stations')} style={{ flex: 1 }} />
+          <Btn title={`Stations${stations.length ? ` (${stations.length})` : ''}`} kind="secondary" onPress={() => router.push('/stations')} style={{ flex: 1 }} />
+          <Btn title="＋ New station" onPress={newStation} style={{ flex: 1.2 }} />
           <Btn
-            title="My location"
+            title="Locate"
             kind="secondary"
             disabled={!fix}
             onPress={() =>
@@ -312,10 +360,31 @@ export default function MapScreen() {
                 400
               )
             }
-            style={{ flex: 1 }}
+            style={{ flex: 0.8 }}
           />
         </View>
       </SafeAreaView>
+
+      <Modal visible={help} transparent animationType="slide" onRequestClose={() => setHelp(false)}>
+        <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)' }} onPress={() => setHelp(false)} />
+        <SafeAreaView edges={['bottom']} style={[styles.help, { backgroundColor: c.card }]}>
+          <Text style={{ color: c.text, fontSize: 20, fontWeight: '800' }}>How EnvRevisit works</Text>
+          <ScrollView style={{ maxHeight: 380 }} contentContainerStyle={{ gap: 12 }}>
+            {HELP.map(([title, body], i) => (
+              <View key={title} style={{ flexDirection: 'row', gap: 10 }}>
+                <View style={[styles.step, { backgroundColor: c.accent }]}>
+                  <Text style={{ color: c.accentText, fontWeight: '800' }}>{i + 1}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: c.text, fontWeight: '700' }}>{title}</Text>
+                  <Text style={{ color: c.muted }}>{body}</Text>
+                </View>
+              </View>
+            ))}
+          </ScrollView>
+          <Btn title="Got it" onPress={() => setHelp(false)} />
+        </SafeAreaView>
+      </Modal>
 
       {!perm && (
         <View style={styles.center}>
@@ -336,7 +405,9 @@ const styles = StyleSheet.create({
   sheetHead: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 12, marginBottom: 8 },
   thumb: { width: 92, height: 92, borderRadius: 10 },
   badge: { position: 'absolute', left: 4, top: 4, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4 },
-  actions: { flexDirection: 'row', gap: 10, paddingHorizontal: 10, paddingBottom: 6 },
+  actions: { flexDirection: 'row', gap: 8, paddingHorizontal: 10, paddingBottom: 6 },
+  help: { padding: 18, gap: 14, borderTopLeftRadius: 18, borderTopRightRadius: 18 },
+  step: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   dot: {
     borderRadius: 999,
     backgroundColor: '#2563EB',

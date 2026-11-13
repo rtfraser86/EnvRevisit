@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { Btn, fmtDateTime, useColors } from '@/components/ui';
-import { addCapture, createStation, getPhoto, stationIdsForAsset, type PhotoRow } from '@/lib/db';
+import { addCapture, createStation, getPhoto, getStation, stationIdsForAsset, type PhotoRow } from '@/lib/db';
 import { compassPoint } from '@/lib/geo';
 import { orientationOf, readPose, type PhotoPose } from '@/lib/library';
 
@@ -14,6 +14,7 @@ export default function PhotoScreen() {
   const [photo, setPhoto] = useState<PhotoRow | null>(null);
   const [pose, setPose] = useState<PhotoPose | null>(null);
   const [stationIds, setStationIds] = useState<number[]>([]);
+  const [stationNames, setStationNames] = useState<Record<number, string>>({});
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -21,7 +22,12 @@ export default function PhotoScreen() {
     if (!id) return;
     getPhoto(id).then(setPhoto);
     readPose(id).then(setPose);
-    stationIdsForAsset(id).then(setStationIds);
+    stationIdsForAsset(id).then(async (ids) => {
+      setStationIds(ids);
+      const names: Record<number, string> = {};
+      for (const sid of ids) names[sid] = (await getStation(sid))?.name ?? `Station ${sid}`;
+      setStationNames(names);
+    });
   }, [id]);
 
   const makeStation = async (thenNavigate: boolean) => {
@@ -98,7 +104,7 @@ export default function PhotoScreen() {
         <View style={{ gap: 8 }}>
           <Text style={{ color: c.muted }}>This photo is already part of a station.</Text>
           {stationIds.map((sid) => (
-            <Btn key={sid} title={`Open station #${sid}`} onPress={() => router.replace(`/station/${sid}`)} />
+            <Btn key={sid} title={`Open “${stationNames[sid] ?? '…'}”`} onPress={() => router.replace(`/station/${sid}`)} />
           ))}
         </View>
       ) : (
@@ -110,8 +116,11 @@ export default function PhotoScreen() {
             placeholderTextColor={c.muted}
             style={[styles.input, { color: c.text, borderColor: c.line, backgroundColor: c.card }]}
           />
-          <Btn title="Revisit this spot" disabled={!photo || busy} onPress={() => makeStation(true)} />
-          <Btn title="Save as station only" kind="secondary" disabled={!photo || busy} onPress={() => makeStation(false)} />
+          <Btn title="Create station & navigate there" disabled={!photo || busy} onPress={() => makeStation(true)} />
+          <Btn title="Create station only" kind="secondary" disabled={!photo || busy} onPress={() => makeStation(false)} />
+          <Text style={{ color: c.muted, fontSize: 12 }}>
+            A station is this photo point plus every repeat photo you take of it. This photo becomes its reference.
+          </Text>
         </View>
       )}
     </ScrollView>

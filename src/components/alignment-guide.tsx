@@ -4,12 +4,16 @@ import { angleDiff } from '@/lib/geo';
 import type { ImageGuidance } from '@/lib/live-match';
 import type { Attitude } from '@/lib/sensors';
 
-// Approximate field of view of the iPhone main (1×) camera for a 4:3 frame: long side / short side.
-export const FOV_LONG = 67;
-export const FOV_SHORT = 53;
-
-export const fovFor = (landscape: boolean) =>
-  landscape ? { hfov: FOV_LONG, vfov: FOV_SHORT } : { hfov: FOV_SHORT, vfov: FOV_LONG };
+/**
+ * Field of view for a 4:3 frame from the lens's 35 mm-equivalent focal length
+ * (26 mm = iPhone main camera → about 67° × 53°).
+ */
+export function fovFor(landscape: boolean, f35 = 26) {
+  const deg = (side: number) => (2 * Math.atan(side / (2 * f35)) * 180) / Math.PI;
+  const long = deg(34.6);
+  const short = deg(25.96);
+  return landscape ? { hfov: long, vfov: short } : { hfov: short, vfov: long };
+}
 
 export type Target = { heading: number | null; pitch: number | null; roll: number | null };
 
@@ -34,8 +38,8 @@ const TOL = {
   image: { turn: 1, tilt: 1, rotate: 0.7, scale: 0.03 },
 };
 
-export function sensorDeltas(att: Attitude, target: Target, landscape: boolean): Deltas {
-  const { hfov, vfov } = fovFor(landscape);
+export function sensorDeltas(att: Attitude, target: Target, landscape: boolean, f35 = 26): Deltas {
+  const { hfov, vfov } = fovFor(landscape, f35);
   const turn = target.heading != null && att.heading != null ? angleDiff(target.heading, att.heading) : null;
   const tilt = target.pitch != null && att.pitch != null ? target.pitch - att.pitch : null;
   const rotate = target.roll != null && att.roll != null ? target.roll - att.roll : null;

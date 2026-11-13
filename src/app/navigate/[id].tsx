@@ -1,5 +1,6 @@
 import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';
+import { useKeepAwake } from 'expo-keep-awake';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -24,6 +25,7 @@ export default function Navigate() {
   const att = useAttitude(true, 100);
   const mapRef = useRef<MapView>(null);
   const arrivedRef = useRef(false);
+  useKeepAwake(); // keep the screen on while walking to the point
 
   useEffect(() => {
     getStation(sid).then(setStation);
