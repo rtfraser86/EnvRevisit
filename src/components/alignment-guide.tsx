@@ -99,7 +99,7 @@ export function allAligned(d: Deltas) {
 }
 
 /** Big, solid-coloured guidance band along the top of the frame. */
-export function GuideHud({ d }: { d: Deltas }) {
+export function GuideHud({ d, video = false }: { d: Deltas; video?: boolean }) {
   const cells = deltaCells(d);
   return (
     <View style={styles.hud} pointerEvents="none">
@@ -119,7 +119,7 @@ export function GuideHud({ d }: { d: Deltas }) {
         ))}
       </View>
       <Text style={styles.source}>
-        {d.source === 'image' ? `📷 Image match · ${d.quality ?? 0}%` : '🧭 Compass & tilt sensors'}
+        {d.source === 'image' ? `📷 Image match${video ? ' (video)' : ''} · ${d.quality ?? 0}%` : '🧭 Compass & tilt sensors'}
       </Text>
     </View>
   );

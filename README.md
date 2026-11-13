@@ -36,15 +36,36 @@ Edit any file in `src/` and the app reloads on the phone.
 |---|---|
 | **Map** (`src/app/index.tsx`) | Indexes geotagged photos (incremental after the first scan), clusters them on a satellite map, shows stations as green diamonds. When you're within 150 m of earlier photos it zooms to them and lists them, nearest first. **＋ New station** starts a station where you're standing (the first photo becomes the reference). **? Help** shows a short how-it-works guide. |
 | **Photo** | Shows date, position, GPS accuracy and camera heading read from EXIF. "Revisit this spot" creates a station with that photo as the reference. |
-| **Station** | The time series. Long-press a photo to make it the alignment reference or remove it. "+ Add older photos" pulls in other camera-roll shots taken within 15–250 m. Exports a CSV capture log. |
+| **Station** | The time series. Long-press a photo to make it the alignment reference or remove it. "+ Add older photos" pulls in other camera-roll shots taken within 15–250 m. **Export station (zip)** shares everything in one file; **Log (CSV)** shares just the capture log. |
 | **Navigate** | Stake-out style: north-up satellite map with an arrow at your position always pointing to the photo point, a dashed line to it, a green circle showing the GPS "on the point" radius, and a HUD with distance, bearing and N/E offsets. Below the map, a compass-relative arrow with "x m ahead · y m left". Haptic buzz when you're on the point. Pan the map to stop auto-follow; tap Re-centre to resume. |
-| **Capture** | Camera framed to the ghost photo's shape. **Ghost ▾** picks which earlier photo to line up with (Original, Latest or any date; remembered per station). Ghost modes: **Blend** (opacity slider), **Edges** (outline of the old photo in a colour you choose: tap the swatch), **Split**, **Flicker**, **Off**. A guidance band shows Turn / Tilt / Rotate (and Distance) in big colour-coded boxes; the yellow ring shows where the ghost's centre is, and the bar shows the roll. A green **Lined up** banner and a buzz tell you when to shoot. **📷 Live match** (EnvRevisit build) compares the camera view with the ghost about once a second and drives the guidance from the image itself, which is far more precise than the compass. Without a confident match it falls back to the compass and tilt sensors. A stake-out chip shows the GPS offset. **✎ Stamp** adds notes/date. After shooting, tap the thumbnail to flick between the ghost and the new photo. |
-| **Timeline** | **Swipe** between dates, **Scrub** a slider that cross-fades through the whole series, or **Compare** any two dates by **Split**, **Blend** or **Flicker**. **Aligned / As shot** switches between registered and original photos. |
+| **Capture** | Camera framed to the ghost photo's shape. **Ghost ▾** picks which earlier photo to line up with (Original, Latest or any date; remembered per station). Ghost modes: **Blend** (opacity slider), **Edges** (outline of the old photo in a colour you choose: tap the swatch), **Split**, **Flicker**, **Off**. A guidance band shows Turn / Tilt / Rotate (and Distance) in big colour-coded boxes; the yellow ring shows where the ghost's centre is, and the bar shows the roll. A green **Lined up** banner and a buzz tell you when to shoot. **📷 Live match** (EnvRevisit build) compares the camera's video frames with the ghost several times a second and drives the guidance from the image itself, which is far more precise than the compass. The band reads **Image match (video)** when it is running on video frames; if the app can't tap the video feed it falls back to a silent still about once a second, and without a confident match to the compass and tilt sensors. A stake-out chip shows the GPS offset. **✎ Stamp** adds notes/date. After shooting, tap the thumbnail to flick between the ghost and the new photo. |
+| **Timeline** | **Swipe** between dates, **Scrub** a slider that cross-fades through the whole series, or **Compare** any two dates by **Split**, **Blend**, **Flicker** or **Change**. **Aligned / As shot** switches between registered and original photos. **Export ▾** shares the current view as an image, or the whole series as a time-lapse **MP4** or **GIF** with the date (and stamp notes) on every frame. |
 
 ### Alignment markers
 - On a station tap **⌖ Add markers** (or **⌖ Markers** on the camera screen) and tap up to 8 fixed features on the old photo: a rock, a fence post, a notch on the skyline. Pinch to zoom; tap a marker to remove it. Changes save as you go.
 - The markers appear as numbered, coloured rings over the live camera, in every ghost mode (including **Off**), so you can put each ring on the same feature.
 - Markers belong to a photo, so each ghost photo can have its own set.
+
+### Aligning by hand with tie points
+When automatic alignment fails (orange **!**) or isn't good enough:
+1. Put markers on the **reference** photo (at least 2; 4 or more spread across the frame is best).
+2. On the station, tap **⋯** on the photo to fix and choose **Align by hand with markers**.
+3. The reference is shown as a small guide. Tap the same features, in the same order, on this photo, then **Align**.
+
+Two markers fit shift + rotation + scale, three add shear, and four or more fit a full perspective transform. A fit that leaves the markers more than 2% of the frame apart is rejected with a message, so a mis-tapped point can't quietly produce a bad warp. Hand alignments are kept when you run **Re-align** on the station.
+
+### Change map
+**Timeline → Compare → Change** tints in magenta the places where the two dates differ, after evening out overall brightness. The slider sets how strong the tint is, and a **Change index** gives the share of the overlapping area that changed. Use aligned photos: on unaligned ones everything lights up. It responds to anything that looks different, including shadows, wet ground and moved clouds, so treat it as a pointer to where to look, not a measurement.
+
+### Station export (zip)
+**Station → Export station (zip)** builds `<Station>.zip` and opens the share sheet (Files, AirDrop, email, OneDrive):
+```
+<Station>/
+  originals/     every photo as shot, named by date
+  aligned/       the registered copies (where alignment worked)
+  captures.csv   one row per photo: time, position, heading, pitch, roll, lens, notes, alignment
+  station.json   station details, reference photo and markers
+```
 
 ### Lenses
 - The camera shows **0.5× / 1× / Tele** buttons when the phone has more than one rear lens. The lens is matched automatically to the ghost photo (from the lens recorded for in-app photos, or the focal length in a camera-roll photo's EXIF), and the lens used is stored with each new photo.
@@ -91,7 +112,9 @@ Every photo in a station is registered to the station's reference photo by a sma
 - **Station → Automatic alignment → Align / Re-align** processes the whole sequence (e.g. older camera-roll photos). Changing the reference re-aligns everything.
 - Green ⇄ badge = aligned, orange ! = couldn't align (too different: viewpoint, season, light or lens).
 - **Timeline → Aligned / As shot** switches between registered and original photos.
+- If it gets one wrong, align that photo by hand with tie points (above).
 - Not available in Expo Go. The rest of the app still runs there.
+- Tie-point alignment, the change map, time-lapse export, zip export and video live matching were added to the native module after the first builds: an older EnvRevisit build shows "needs a new build" for them until you rebuild.
 
 ## Building the EnvRevisit app (development build)
 Needs the Apple Developer Program and your Expo account. All from the PC, in the project folder:
@@ -116,7 +139,7 @@ Needs the Apple Developer Program and your Expo account. All from the PC, in the
    and open the project from inside the EnvRevisit app (or scan the QR code). JavaScript changes reload live. Only adding new native libraries needs another build.
 
 ## Roadmap
-**Next:** live image matching while lining up ("step left 0.4 m / closer" from the camera feed), lens matching (0.5×/2×), app icon, zip export of a station (originals + aligned + CSV).
+**Next:** "step left 0.4 m / closer" position hints from the camera feed, in-between zoom levels, app icon, change masks to ignore sky or water.
 
 ## Project layout
 ```
@@ -128,10 +151,14 @@ src/app/            screens (Expo Router — file name = route)
   add-photos/[id].tsx add older camera-roll photos
   navigate/[id].tsx   walk-to guidance
   capture/[id].tsx    ghost-overlay camera
+  markers/[id].tsx    alignment markers / tie points
   timeline/[id].tsx   swipe / scrub / compare
 src/components/     UI pieces (slider, alignment guide, buttons)
 src/lib/            db.ts (SQLite), library.ts (camera-roll scan + EXIF),
-                    sensors.ts (GPS, compass, pitch/roll), geo.ts, storage.ts
+                    sensors.ts (GPS, compass, pitch/roll), geo.ts, storage.ts,
+                    align.ts (alignment, live match, change map, time-lapse),
+                    tiepoints.ts (marker fit), export.ts (station zip)
+modules/env-align/  native iOS module (Vision + CoreImage + AVFoundation)
 ```
 
 Checks: `npx tsc --noEmit` and `npx expo lint`.

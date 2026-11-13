@@ -28,6 +28,36 @@ public class EnvAlignModule: Module {
     AsyncFunction("edges") { (uri: String, outUri: String, long: Double) -> [String: Any] in
       return EnvAligner.edges(uri: uri, outUri: outUri, long: CGFloat(long))
     }
+
+    // Warp a photo with a transform worked out in JS (tie-point alignment).
+    AsyncFunction("warp") { (movUri: String, outUri: String, h: [Double], outW: Double, outH: Double) -> [String: Any] in
+      return EnvAligner.warpFile(movUri: movUri, outUri: outUri, h: h, outSize: CGSize(width: outW, height: outH))
+    }
+
+    // Where two aligned photos differ (white = changed, alpha = how much).
+    AsyncFunction("changeMap") { (aUri: String, bUri: String, outUri: String, long: Double) -> [String: Any] in
+      return EnvMedia.changeMap(aUri: aUri, bUri: bUri, outUri: outUri, long: CGFloat(long))
+    }
+
+    // Zip a folder (station export).
+    AsyncFunction("zipFolder") { (dirUri: String, outUri: String) -> [String: Any] in
+      return EnvMedia.zipFolder(dirUri: dirUri, outUri: outUri)
+    }
+
+    // Time-lapse: format is "mp4" or "gif"; one label per frame is burnt into the picture.
+    AsyncFunction("timelapse") { (frames: [String], labels: [String], outUri: String, format: String, long: Double, seconds: Double) -> [String: Any] in
+      return EnvMedia.timelapse(frames: frames, labels: labels, outUri: outUri, format: format, long: CGFloat(long), seconds: seconds)
+    }
+
+    // Live matching against the camera's video frames. hold is "portrait", "cw" or "ccw".
+    AsyncFunction("liveMatch") { (refUri: String, hold: String, workLong: Double) -> [String: Any] in
+      return EnvLive.shared.match(refUri: refUri, hold: hold, workLong: CGFloat(workLong))
+    }
+
+    AsyncFunction("liveStop") { () -> Bool in
+      EnvLive.shared.stop()
+      return true
+    }
   }
 }
 
@@ -85,18 +115,23 @@ enum EnvAligner {
 
   /// Same transform expressed with the y axis flipped (top-left ↔ bottom-left origin).
   static func flipY(_ m: simd_float3x3, height: CGFloat) -> simd_float3x3 {
-    // F = [1 0 0; 0 -1 h; 0 0 1] (column-major below), F⁻¹ = F
-    let f = simd_float3x3(columns: (
+    let f = flipMatrix(height) // its own inverse
+    return f * m * f
+  }
+
+  /// Flip between top-left and bottom-left origins for an image of the given height.
+  static func flipMatrix(_ height: CGFloat) -> simd_float3x3 {
+    return simd_float3x3(columns: (
       simd_float3(1, 0, 0),
       simd_float3(0, -1, 0),
       simd_float3(0, Float(height), 1)
     ))
-    return f * m * f
   }
 
-  static func warp(_ image: CIImage, _ m: simd_float3x3, size: CGSize) -> CIImage? {
-    let w = size.width
-    let h = size.height
+  /// Warp `image` (srcSize px, CoreImage coords) with `m` into an outSize frame, over black.
+  static func warp(_ image: CIImage, _ m: simd_float3x3, srcSize: CGSize, outSize: CGSize) -> CIImage? {
+    let w = srcSize.width
+    let h = srcSize.height
     guard let f = CIFilter(name: "CIPerspectiveTransform") else { return nil }
     f.setValue(image, forKey: kCIInputImageKey)
     f.setValue(CIVector(cgPoint: apply(m, CGPoint(x: 0, y: h))), forKey: "inputTopLeft")
@@ -104,9 +139,44 @@ enum EnvAligner {
     f.setValue(CIVector(cgPoint: apply(m, CGPoint(x: 0, y: 0))), forKey: "inputBottomLeft")
     f.setValue(CIVector(cgPoint: apply(m, CGPoint(x: w, y: 0))), forKey: "inputBottomRight")
     guard let out = f.outputImage else { return nil }
-    let rect = CGRect(origin: .zero, size: size)
+    let rect = CGRect(origin: .zero, size: outSize)
     let black = CIImage(color: CIColor(red: 0, green: 0, blue: 0)).cropped(to: rect)
     return out.cropped(to: rect).composited(over: black)
+  }
+
+  static func warp(_ image: CIImage, _ m: simd_float3x3, size: CGSize) -> CIImage? {
+    return warp(image, m, srcSize: size, outSize: size)
+  }
+
+  /// Tie-point alignment: `h` is row-major and maps photo pixels to output pixels, both with
+  /// the origin at the top-left.
+  static func warpFile(movUri: String, outUri: String, h: [Double], outSize: CGSize) -> [String: Any] {
+    guard h.count == 9, outSize.width >= 2, outSize.height >= 2 else { return fail("Bad transform") }
+    guard let movImg = load(movUri) else { return fail("Could not read the photo") }
+    let movSize = CGSize(width: movImg.size.width.rounded(), height: movImg.size.height.rounded())
+    guard let movCG = render(movImg, size: movSize) else { return fail("Could not prepare the photo") }
+    let top = simd_float3x3(rows: [
+      simd_float3(Float(h[0]), Float(h[1]), Float(h[2])),
+      simd_float3(Float(h[3]), Float(h[4]), Float(h[5])),
+      simd_float3(Float(h[6]), Float(h[7]), Float(h[8])),
+    ])
+    // Into CoreImage coordinates (origin bottom-left) on both sides.
+    let m = flipMatrix(outSize.height) * top * flipMatrix(movSize.height)
+    let corners = [
+      CGPoint(x: 0, y: 0), CGPoint(x: movSize.width, y: 0),
+      CGPoint(x: 0, y: movSize.height), CGPoint(x: movSize.width, y: movSize.height),
+    ]
+    for c in corners {
+      let v = m * simd_float3(Float(c.x), Float(c.y), 1)
+      if !(v.z > 1e-6) { return fail("The markers give an impossible alignment") }
+    }
+    guard let warped = warp(CIImage(cgImage: movCG), m, srcSize: movSize, outSize: outSize),
+          let cg = ciContext.createCGImage(warped, from: CGRect(origin: .zero, size: outSize)),
+          let jpeg = UIImage(cgImage: cg).jpegData(compressionQuality: 0.9) else {
+      return fail("Could not render the aligned photo")
+    }
+    if let saveErr = write(jpeg, to: outUri) { return fail(saveErr) }
+    return ["ok": true, "uri": outUri, "width": Double(outSize.width), "height": Double(outSize.height)]
   }
 
   static func meanDiff(_ a: CIImage, _ b: CIImage, size: CGSize) -> Double {

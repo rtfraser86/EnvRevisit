@@ -18,6 +18,7 @@ import {
   type Station,
 } from '@/lib/db';
 import { alignmentAvailable, alignStation, type AlignProgress } from '@/lib/align';
+import { exportStationZip, shareFile } from '@/lib/export';
 import { compassPoint } from '@/lib/geo';
 import { deleteCaptureFile, shareStationCsv } from '@/lib/storage';
 
@@ -29,6 +30,7 @@ export default function StationScreen() {
   const [caps, setCaps] = useState<Capture[]>([]);
   const [editing, setEditing] = useState<Capture | null>(null);
   const [aligning, setAligning] = useState<AlignProgress | null>(null);
+  const [exporting, setExporting] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setStation(await getStation(sid));
@@ -59,69 +61,67 @@ export default function StationScreen() {
       station.name
     );
 
+  const makeReference = async (cap: Capture) => {
+    await setReference(sid, cap.id);
+    // The reference also defines where to stand / which way to look.
+    await updateStation(sid, {
+      lat: cap.lat ?? station.lat,
+      lon: cap.lon ?? station.lon,
+      heading: cap.heading ?? station.heading,
+      pitch: cap.pitch ?? station.pitch,
+      roll: cap.roll ?? station.roll,
+      orientation: cap.orientation ?? station.orientation,
+    });
+    await load();
+    // Everything has to be re-registered to the new reference.
+    if (alignmentAvailable) runAlign();
+  };
+
+  const removeCapture = (cap: Capture) =>
+    Alert.alert(
+      'Remove this photo from the station?',
+      cap.source === 'app'
+        ? 'The copy kept by EnvRevisit is deleted. A copy saved to Photos is not affected.'
+        : 'The photo stays in your camera roll.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            await deleteCapture(cap.id);
+            deleteCaptureFile(cap);
+            load();
+          },
+        },
+      ]
+    );
+
   const onCaptureMenu = (cap: Capture) => {
-    const options = ['Alignment markers', 'Edit stamp notes', 'Use as alignment reference', 'Remove from station', 'Cancel'];
-    const act = async (i: number) => {
-      if (i === 0) {
-        router.push(`/markers/${cap.id}`);
-        return;
-      }
-      if (i === 1) {
-        setEditing(cap);
-        return;
-      }
-      if (i === 2) {
-        await setReference(sid, cap.id);
-        // The reference also defines where to stand / which way to look.
-        await updateStation(sid, {
-          lat: cap.lat ?? station.lat,
-          lon: cap.lon ?? station.lon,
-          heading: cap.heading ?? station.heading,
-          pitch: cap.pitch ?? station.pitch,
-          roll: cap.roll ?? station.roll,
-          orientation: cap.orientation ?? station.orientation,
-        });
-        // Everything has to be re-registered to the new reference.
-        if (alignmentAvailable) {
-          load();
-          runAlign();
-          return;
-        }
-      } else if (i === 3) {
-        Alert.alert(
-          'Remove this photo from the station?',
-          cap.source === 'app'
-            ? 'The copy kept by EnvRevisit is deleted. A copy saved to Photos is not affected.'
-            : 'The photo stays in your camera roll.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Remove',
-              style: 'destructive',
-              onPress: async () => {
-                await deleteCapture(cap.id);
-                deleteCaptureFile(cap);
-                load();
-              },
-            },
-          ]
-        );
-        return;
-      }
-      load();
-    };
+    const isRef = cap.id === ref?.id;
+    const items: { label: string; run: () => void; destructive?: boolean }[] = [
+      isRef
+        ? { label: 'Alignment markers', run: () => router.push(`/markers/${cap.id}`) }
+        : { label: 'Align by hand with markers', run: () => router.push(`/markers/${cap.id}`) },
+      { label: 'Edit stamp notes', run: () => setEditing(cap) },
+    ];
+    if (!isRef) items.push({ label: 'Use as alignment reference', run: () => makeReference(cap) });
+    items.push({ label: 'Remove from station', run: () => removeCapture(cap), destructive: true });
+
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
-        { options, destructiveButtonIndex: 3, cancelButtonIndex: 4, title: fmtDate(cap.taken_at) },
-        act
+        {
+          options: [...items.map((x) => x.label), 'Cancel'],
+          destructiveButtonIndex: items.findIndex((x) => x.destructive),
+          cancelButtonIndex: items.length,
+          title: fmtDate(cap.taken_at),
+        },
+        (i) => items[i]?.run()
       );
     } else {
       Alert.alert(fmtDate(cap.taken_at), undefined, [
-        { text: options[0], onPress: () => act(0) },
-        { text: options[1], onPress: () => act(1) },
-        { text: options[2], onPress: () => act(2) },
-        { text: options[3], style: 'destructive', onPress: () => act(3) },
-        { text: 'Cancel', style: 'cancel' },
+        ...items.map((x) => ({ text: x.label, onPress: x.run, style: x.destructive ? ('destructive' as const) : undefined })),
+        { text: 'Cancel', style: 'cancel' as const },
       ]);
     }
   };
@@ -154,6 +154,25 @@ export default function StationScreen() {
       load();
     }
   }
+
+  const exportZip = async () => {
+    if (exporting) return;
+    setExporting('Preparing…');
+    try {
+      const res = await exportStationZip(station, (done, total) => setExporting(`Copying ${done} / ${total}…`));
+      if (!res.ok) Alert.alert("Couldn't export", res.reason);
+      else {
+        if (res.missing) {
+          Alert.alert('Some photos were left out', `${res.missing} original photo(s) couldn't be read (they may be in iCloud only).`);
+        }
+        await shareFile(res.uri, 'application/zip', 'public.zip-archive');
+      }
+    } catch (e) {
+      Alert.alert("Couldn't export", String(e instanceof Error ? e.message : e));
+    } finally {
+      setExporting(null);
+    }
+  };
 
   const nAligned = caps.filter((x) => x.align_status === 'ok').length;
   const nFailed = caps.filter((x) => x.align_status === 'failed').length;
@@ -260,7 +279,7 @@ export default function StationScreen() {
         ))}
       </View>
       <Text style={{ color: c.muted, fontSize: 12 }}>
-        Tap ⋯ under a photo for markers, stamp notes, making it the reference, or removing it.
+        Tap ⋯ under a photo for markers, aligning it by hand, stamp notes, making it the reference, or removing it.
       </Text>
       {hasStamps && (
         <View style={[styles.switchRow, { borderColor: c.line, backgroundColor: c.card }]}>
@@ -296,7 +315,20 @@ export default function StationScreen() {
           onPress={runAlign}
         />
       </View>
-      <Btn title="Export capture log (CSV)" kind="secondary" onPress={() => shareStationCsv(station)} />
+      <View style={{ flexDirection: 'row', gap: 10 }}>
+        <Btn
+          title={exporting ?? 'Export station (zip)'}
+          kind="secondary"
+          style={{ flex: 1.4 }}
+          disabled={!!exporting || !caps.length}
+          onPress={exportZip}
+        />
+        <Btn title="Log (CSV)" kind="secondary" style={{ flex: 1 }} onPress={() => shareStationCsv(station)} />
+      </View>
+      <Text style={{ color: c.muted, fontSize: 12 }}>
+        The zip holds the original photos, the aligned copies, a CSV and a JSON file with positions, angles, notes and
+        markers.
+      </Text>
       <Btn title="Delete station" kind="ghost" onPress={remove} />
       {editing && (
         <StampEditor

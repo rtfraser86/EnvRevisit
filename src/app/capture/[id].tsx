@@ -62,6 +62,10 @@ import {
   edgesFor,
   ghostForMatching,
   matchLiveFrame,
+  matchVideoFrame,
+  smoothMatch,
+  stopVideoMatching,
+  videoMatchAvailable,
   type LiveMatch,
 } from '@/lib/align';
 import { orientationOf, readPose } from '@/lib/library';
@@ -128,6 +132,8 @@ export default function CaptureScreen() {
   const [lenses, setLenses] = useState<Partial<Record<LensKind, string>>>({});
   const [lens, setLens] = useState<LensKind>('wide');
   const [focused, setFocused] = useState(true);
+  const [videoMode, setVideoMode] = useState(false);
+  const holdRef = useRef<'portrait' | 'cw' | 'ccw'>('portrait');
   const lensPicked = useRef(false); // true once the user chooses a lens by hand
   const att = useAttitude(true, 50);
   const { fix } = usePosition(true, true);
@@ -299,22 +305,47 @@ export default function CaptureScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ghostUri]);
 
-  // Live image matching: grab a silent low-quality frame, register it against the ghost, repeat.
+  // Live image matching. Preferred: the native side registers the camera's own video frames
+  // against the ghost several times a second. Fallback (older build, or it can't attach to the
+  // camera): grab a silent low-quality still about once a second and register that.
   useEffect(() => {
     if (!liveOn || !ready || !ghostSmall || !focused) return;
     let stop = false;
+    let useVideo = videoMatchAvailable;
+    let noCamera = 0;
     (async () => {
       while (!stop) {
         if (busyRef.current || !cam.current) {
           await sleep(300);
           continue;
         }
+        const { hfov, vfov } = fovRef.current;
+        if (useVideo) {
+          try {
+            const m = await matchVideoFrame(ghostSmall, holdRef.current, hfov, vfov);
+            if (stop) break;
+            if (!m.ok && m.reason === 'no-camera') {
+              // Give the camera a few seconds to start before giving up on video frames.
+              if (++noCamera >= 12) useVideo = false;
+              await sleep(300);
+              continue;
+            }
+            noCamera = 0;
+            setVideoMode(true);
+            setLive((prev) => smoothMatch(prev, m));
+          } catch (e) {
+            console.warn('video match', e);
+            useVideo = false;
+          }
+          await sleep(120);
+          continue;
+        }
+        setVideoMode(false);
         const run = (async () => {
           const pic = await cam.current?.takePictureAsync({ quality: 0.3, shutterSound: false });
           if (!pic) return;
           try {
             if (stop) return;
-            const { hfov, vfov } = fovRef.current;
             const m = await matchLiveFrame(ghostSmall, pic.uri, hfov, vfov);
             if (!stop) setLive(m);
           } finally {
@@ -337,6 +368,13 @@ export default function CaptureScreen() {
     };
   }, [liveOn, ready, ghostSmall, focused]);
 
+  // Hand the camera's video frames back when live matching isn't in use.
+  useEffect(() => {
+    if (liveOn && focused) return;
+    stopVideoMatching();
+  }, [liveOn, focused]);
+  useEffect(() => stopVideoMatching, []);
+
   // A live match goes stale after a few seconds without a fresh one.
   useEffect(() => {
     if (!live) return;
@@ -349,6 +387,10 @@ export default function CaptureScreen() {
   // upright to the person holding it (ghost, grid, guide, readout) lives in a "physical
   // frame" rotated ±90°. The camera preview itself already looks upright, so it isn't rotated.
   const shot = shotOf(att.hold);
+  const hold = att.hold;
+  useEffect(() => {
+    holdRef.current = hold;
+  }, [hold]);
   // With no ghost yet (first photo of a new station) the frame follows how the phone is held.
   const refShot = ghost
     ? ghost.orientation ?? orientationOf(ghost.width, ghost.height) ?? station?.orientation ?? 'portrait'
@@ -625,7 +667,7 @@ export default function CaptureScreen() {
               </View>
             )}
             {ghost && <AlignmentGuide width={physW} height={physH} d={deltas} />}
-            {ghost && <GuideHud d={deltas} />}
+            {ghost && <GuideHud d={deltas} video={videoMode} />}
             {stamp.enabled && (
               <StampOverlay
                 lines={stampLines({ takenAt: now, note1: stamp.note1, note2: stamp.note2, showDate: stamp.showDate })}

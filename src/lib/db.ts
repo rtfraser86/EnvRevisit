@@ -53,6 +53,7 @@ export type Capture = {
   aligned_uri?: string | null; // copy warped into the reference frame
   align_status?: 'ok' | 'failed' | null;
   align_inliers?: number | null;
+  align_manual?: number; // 0/1
   /** JSON array of alignment markers, [{x, y}] as fractions of the upright photo (0–1). */
   markers?: string | null;
   /** Lens used for an in-app photo. */
@@ -155,6 +156,8 @@ export function getDb() {
         // v0.5: alignment markers and lens
         ['captures', 'markers', 'TEXT'],
         ['captures', 'lens', 'TEXT'],
+        // v0.6: 1 when the photo was aligned by hand with markers (kept on Re-align)
+        ['captures', 'align_manual', 'INTEGER NOT NULL DEFAULT 0'],
       ];
       for (const [table, col, type] of addCols) {
         const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
@@ -321,11 +324,12 @@ export async function setAlignment(
   id: number,
   alignedUri: string | null,
   status: 'ok' | 'failed' | null,
-  inliers: number | null
+  inliers: number | null,
+  manual = false
 ) {
   const db = await getDb();
   await db.runAsync(
-    'UPDATE captures SET aligned_uri = ?, align_status = ?, align_inliers = ? WHERE id = ?',
-    alignedUri, status, inliers, id
+    'UPDATE captures SET aligned_uri = ?, align_status = ?, align_inliers = ?, align_manual = ? WHERE id = ?',
+    alignedUri, status, inliers, manual ? 1 : 0, id
   );
 }

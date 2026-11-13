@@ -2,17 +2,31 @@ import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
-import { Alert, FlatList, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import {
+  ActionSheetIOS,
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 import { captureRef } from 'react-native-view-shot';
 
 import { Slider } from '@/components/slider';
 import { StampOverlay, stampLines } from '@/components/stamp';
 import { Pill, fmtDate, fmtDateTime, useColors } from '@/components/ui';
-import { alignmentAvailable } from '@/lib/align';
+import { alignmentAvailable, changeMapFor, exportTimelapse, type ChangeMap } from '@/lib/align';
+import { safeName, shareFile } from '@/lib/export';
 import { getStation, listCaptures, updateStation, type Capture, type Station } from '@/lib/db';
 
 type Mode = 'swipe' | 'scrub' | 'compare';
-type Cmp = 'split' | 'blend' | 'flicker';
+type Cmp = 'split' | 'blend' | 'flicker' | 'change';
+const CHANGE_COLOUR = '#FF2D95';
 
 export default function Timeline() {
   const { id, start, a: aParam, b: bParam, view } = useLocalSearchParams<{
@@ -37,8 +51,50 @@ export default function Timeline() {
   const [a, setA] = useState(0); // compare: left/before
   const [b, setB] = useState(0); // compare: right/after
   const [slot, setSlot] = useState<'a' | 'b'>('a'); // compare: which side the next thumbnail tap sets
+  const [heat, setHeat] = useState<{ key: string; map: ChangeMap } | null>(null);
+  const [exporting, setExporting] = useState<string | null>(null);
   const listRef = useRef<FlatList<Capture>>(null);
   const shotRef = useRef<ComponentRef<typeof View>>(null);
+
+  /** Time-lapse of the whole series as a video or GIF, each photo labelled with its date. */
+  const shareTimelapse = async (format: 'mp4' | 'gif') => {
+    if (exporting) return;
+    setExporting(format === 'mp4' ? 'Making video…' : 'Making GIF…');
+    try {
+      const stamps = (station?.show_stamps ?? 1) === 1;
+      const labels = caps.map((cap) =>
+        [fmtDate(cap.taken_at), ...(stamps ? [cap.note1, cap.note2].filter((x): x is string => !!x?.trim()) : [])].join('\n')
+      );
+      const name = `${safeName(station?.name ?? '', `station_${sid}`)}_timelapse`;
+      const res = await exportTimelapse(caps, labels, format, name, useAligned);
+      if (!res.ok) Alert.alert("Couldn't export", res.reason);
+      else if (format === 'mp4') await shareFile(res.uri, 'video/mp4', 'public.mpeg-4');
+      else await shareFile(res.uri, 'image/gif', 'com.compuserve.gif');
+    } catch (e) {
+      Alert.alert("Couldn't export", String(e instanceof Error ? e.message : e));
+    } finally {
+      setExporting(null);
+    }
+  };
+
+  const exportMenu = () => {
+    const items: [string, () => void][] = [
+      ['Share this view (image)', () => shareView()],
+      ['Time-lapse video (MP4)', () => shareTimelapse('mp4')],
+      ['Animated GIF', () => shareTimelapse('gif')],
+    ];
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: [...items.map((x) => x[0]), 'Cancel'], cancelButtonIndex: items.length, title: 'Export' },
+        (i) => items[i]?.[1]()
+      );
+    } else {
+      Alert.alert('Export', undefined, [
+        ...items.map((x) => ({ text: x[0], onPress: x[1] })),
+        { text: 'Cancel', style: 'cancel' as const },
+      ]);
+    }
+  };
 
   /** Share the picture currently on screen (with its date labels and stamps). */
   const shareView = async () => {
@@ -78,6 +134,23 @@ export default function Timeline() {
     }, 2000);
     return () => clearInterval(t);
   }, [pending, sid]);
+
+  // Change map for the two photos being compared (worked out when the Change view is opened).
+  const capA = caps[a];
+  const capB = caps[b];
+  const heatKey = capA && capB ? `${capA.id}:${capA.aligned_uri ?? ''}|${capB.id}:${capB.aligned_uri ?? ''}` : '';
+  const wantHeat = mode === 'compare' && cmp === 'change' && !!heatKey && heat?.key !== heatKey;
+  useEffect(() => {
+    if (!wantHeat || !capA || !capB) return;
+    let cancelled = false;
+    changeMapFor(capA, capB)
+      .catch((e): ChangeMap => ({ ok: false, reason: String(e instanceof Error ? e.message : e) }))
+      .then((map) => !cancelled && setHeat({ key: heatKey, map }));
+    return () => {
+      cancelled = true;
+    };
+  }, [wantHeat, heatKey, capA, capB]);
+  const heatNow = heat && heat.key === heatKey ? heat.map : null;
 
   useEffect(() => {
     if (mode !== 'compare' || cmp !== 'flicker') return;
@@ -144,7 +217,7 @@ export default function Timeline() {
           <Pill label={useAligned ? 'Aligned' : 'As shot'} active={useAligned} onPress={() => setUseAligned((v) => !v)} />
         )}
         {hasStamps && <Pill label={showStamps ? 'Stamps on' : 'Stamps off'} active={showStamps} onPress={toggleStamps} />}
-        <Pill label="Share" onPress={shareView} />
+        <Pill label={exporting ?? 'Export ▾'} onPress={exportMenu} />
       </View>
 
       <View ref={shotRef} collapsable={false} style={{ alignItems: 'center', backgroundColor: '#000' }}>
@@ -210,6 +283,36 @@ export default function Timeline() {
                 <Text style={[styles.tag, { left: 8 }]}>{fmtDate((flickB ? caps[b] : caps[a]).taken_at)}</Text>
               </>
             )}
+            {cmp === 'change' && (
+              <>
+                {img(pick(caps[b]))}
+                {heatNow?.ok && (
+                  <Image
+                    source={{ uri: heatNow.uri }}
+                    style={[StyleSheet.absoluteFill, { opacity: 0.25 + 0.75 * split }]}
+                    contentFit="cover"
+                    tintColor={CHANGE_COLOUR}
+                    transition={0}
+                  />
+                )}
+                <Text style={[styles.tag, { left: 8 }]}>
+                  {fmtDate(caps[a].taken_at)} → {fmtDate(caps[b].taken_at)}
+                </Text>
+                {heatNow?.ok && (
+                  <Text style={[styles.tag, { right: 8 }]}>Change index {(heatNow.changed * 100).toFixed(1)}%</Text>
+                )}
+                {!heatNow && (
+                  <View style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center' }]}>
+                    <ActivityIndicator color="#fff" />
+                  </View>
+                )}
+                {heatNow && !heatNow.ok && (
+                  <View style={styles.notice}>
+                    <Text style={{ color: '#fff', fontWeight: '700', textAlign: 'center' }}>{heatNow.reason}</Text>
+                  </View>
+                )}
+              </>
+            )}
             {pending && (
               <Text style={[styles.tag, { left: 8, top: undefined, bottom: 8 }]}>Aligning the new photo…</Text>
             )}
@@ -239,7 +342,7 @@ export default function Timeline() {
         {mode === 'compare' && (
           <>
             <View style={{ flexDirection: 'row', gap: 8, justifyContent: 'center' }}>
-              {(['split', 'blend', 'flicker'] as Cmp[]).map((m) => (
+              {(['split', 'blend', 'flicker', 'change'] as Cmp[]).map((m) => (
                 <Pill key={m} label={m[0].toUpperCase() + m.slice(1)} active={cmp === m} onPress={() => setCmp(m)} />
               ))}
             </View>
@@ -263,6 +366,9 @@ export default function Timeline() {
             </View>
             <Text style={{ color: c.muted, fontSize: 12 }}>
               Tap Before or After, then tap a photo below to change it.
+              {cmp === 'change'
+                ? ' Pink shows where the two aligned photos differ; the slider sets how strongly it is drawn. Shadows and lighting can show up as change, so compare photos taken at a similar time of day.'
+                : ''}
             </Text>
           </>
         )}
@@ -325,5 +431,14 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   thumb: { width: 64, height: 64, borderRadius: 8, borderWidth: 3 },
+  notice: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    top: '42%',
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    padding: 10,
+    borderRadius: 10,
+  },
   slot: { flex: 1, borderWidth: 2, borderRadius: 10, paddingVertical: 6, paddingHorizontal: 10 },
 });
