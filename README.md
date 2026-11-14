@@ -138,7 +138,17 @@ Needs the Apple Developer Program and your Expo account. All from the PC, in the
    and open the project from inside the EnvRevisit app (or scan the QR code). JavaScript changes reload live. Only adding new native libraries needs another build.
 
 ## Roadmap
-**Next:** metric "step left 0.4 m" hints. A single camera view can't tell a small sideways step from a small turn, so this needs depth (LiDAR on Pro iPhones) or a short side-to-side sweep; until then the image match gives turn / tilt / rotate / closer-back and the stake-out chip gives the GPS offset.
+### Step hints (👣)
+With **📷 Live match** running on video, a blue band under the guidance says where to stand, e.g. **👣 Step ← left 40 cm · ↑ forward 1.2 m**, turning green (**On the spot**) when you're within about 15 cm sideways and 25 cm forwards.
+
+How it works: turning the phone moves the whole picture by the same angle, but stepping moves nearby ground much more than distant background (parallax). The app matches the bottom of the view (near ground) and the top (far background) separately, after taking out any tilt of the phone, and the difference between the two is the step. Distances come from the camera's tilt and an assumed phone height of 1.5 m.
+
+Use it as a guide, not a measurement:
+- It needs ground (or something close) in the lower part of the view. Looking straight out at the horizon, at a cliff face or at open water, there's no parallax to measure and the band doesn't appear.
+- It scales with the height assumption: hold the phone at chest to eye height. On a slope or a raised bank the metres are off, but the direction is still right.
+- Get the turn and tilt roughly right first; the hint shows up once the image match locks on.
+
+**Next:** use the LiDAR depth on Pro iPhones for true distances instead of the ground-plane assumption.
 
 ## Project layout
 ```

@@ -13,6 +13,8 @@ export type RegisterResult =
       /** Mean absolute difference vs the reference before / after warping (0–1). */
       diffBefore: number;
       diffAfter: number;
+      /** Live match only (native v3): near/far band shifts for step hints. */
+      bands?: import('../../../src/lib/step-hint').Bands;
     }
   | Fail;
 

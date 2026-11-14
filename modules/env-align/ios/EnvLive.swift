@@ -198,7 +198,7 @@ final class EnvLive: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
       candidates = [.right, .left] // a quarter turn one way or the other
     }
 
-    var best: (est: Estimate, orientation: CGImagePropertyOrientation)?
+    var best: (est: Estimate, orientation: CGImagePropertyOrientation, mov: UIImage)?
     var scores: [Double] = []
     var reason = "No alignment found"
     for o in candidates {
@@ -216,7 +216,7 @@ final class EnvLive: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         continue
       }
       scores.append(e.after)
-      if best == nil || e.after < best!.est.after { best = (e, o) }
+      if best == nil || e.after < best!.est.after { best = (e, o, mov) }
     }
     guard let chosen = best else { return ["ok": false, "reason": reason] }
 
@@ -228,7 +228,7 @@ final class EnvLive: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
       }
     }
 
-    return [
+    var result: [String: Any] = [
       "ok": true,
       "h": EnvAligner.rowMajor(chosen.est.m),
       "width": Double(chosen.est.workSize.width),
@@ -236,5 +236,10 @@ final class EnvLive: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
       "diffBefore": chosen.est.before,
       "diffAfter": chosen.est.after,
     ]
+    // Near/far parallax for the step hints, only once the view is roughly lined up.
+    if chosen.est.after < chosen.est.before {
+      result["bands"] = EnvParallax.bands(ref: ref, mov: chosen.mov, m: chosen.est.m)
+    }
+    return result
   }
 }

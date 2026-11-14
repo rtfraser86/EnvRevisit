@@ -16,6 +16,7 @@ import { Asset } from 'expo-media-library';
 
 import { getReference, listCaptures, parseMarkers, setAlignment, type Capture, type MaskRect } from './db';
 import { guidanceFromHomography, plausibleGuidance, type ImageGuidance } from './live-match';
+import type { Bands } from './step-hint';
 import { fitFromPairs } from './tiepoints';
 
 export const alignmentAvailable = EnvAlign != null;
@@ -175,14 +176,14 @@ export async function ghostForMatching(cap: Capture): Promise<string> {
   return r.uri;
 }
 
-export type LiveMatch = { ok: true; g: ImageGuidance; at: number } | { ok: false; reason: string; at: number };
+export type LiveMatch = { ok: true; g: ImageGuidance; at: number; bands?: Bands } | { ok: false; reason: string; at: number };
 
 function toLiveMatch(r: RegisterResult, hfov: number, vfov: number): LiveMatch {
   const at = Date.now();
   if (!r.ok) return { ok: false, reason: r.reason, at };
   const g = guidanceFromHomography(r.h, r.width, r.height, hfov, vfov, r.diffBefore, r.diffAfter);
   if (!g || !plausibleGuidance(g) || g.quality < 8) return { ok: false, reason: 'No confident match', at };
-  return { ok: true, g, at };
+  return { ok: true, g, at, bands: r.bands };
 }
 
 /** Register one still camera frame against the ghost and turn it into guidance. */

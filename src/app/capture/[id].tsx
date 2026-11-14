@@ -72,6 +72,7 @@ import {
 } from '@/lib/align';
 import { orientationOf, readPose } from '@/lib/library';
 import { shotOf, useAttitude, usePosition } from '@/lib/sensors';
+import { stepHint, smoothStep, stepText, type StepHint } from '@/lib/step-hint';
 import { persistCapture, saveToPhotosLibrary } from '@/lib/storage';
 
 type Mode = 'blend' | 'edges' | 'split' | 'flicker' | 'off';
@@ -138,6 +139,8 @@ export default function CaptureScreen() {
   const [focused, setFocused] = useState(true);
   const [videoMode, setVideoMode] = useState(false);
   const holdRef = useRef<'portrait' | 'cw' | 'ccw'>('portrait');
+  const pitchRef = useRef<number | null>(null);
+  const [step, setStep] = useState<StepHint | null>(null);
   const lensPicked = useRef(false); // true once the user chooses a lens by hand
   const att = useAttitude(true, 50);
   const { fix } = usePosition(true, true);
@@ -295,6 +298,7 @@ export default function CaptureScreen() {
     const pick = cap === 'latest' ? caps[caps.length - 1] : cap;
     if (!pick) return;
     setGhostId(pick.id);
+    setStep(null);
     kvSet(`ghost:${sid}`, cap === 'latest' ? 'latest' : String(pick.id));
     setPicking(false);
   };
@@ -361,6 +365,10 @@ export default function CaptureScreen() {
             noCamera = 0;
             setVideoMode(true);
             setLive((prev) => smoothMatch(prev, m));
+            if (m.ok) {
+              const s = stepHint(m.bands, pitchRef.current, hfov, vfov);
+              setStep((prev) => (s ? smoothStep(prev, s) : prev));
+            }
           } catch (e) {
             console.warn('video match', e);
             useVideo = false;
@@ -416,9 +424,13 @@ export default function CaptureScreen() {
   // frame" rotated ±90°. The camera preview itself already looks upright, so it isn't rotated.
   const shot = shotOf(att.hold);
   const hold = att.hold;
+  const pitchNow = att.pitch;
   useEffect(() => {
     holdRef.current = hold;
   }, [hold]);
+  useEffect(() => {
+    pitchRef.current = pitchNow;
+  }, [pitchNow]);
   // With no ghost yet (first photo of a new station) the frame follows how the phone is held.
   const refShot = ghost
     ? ghost.orientation ?? orientationOf(ghost.width, ghost.height) ?? station?.orientation ?? 'portrait'
@@ -698,7 +710,7 @@ export default function CaptureScreen() {
               </View>
             )}
             {ghost && <AlignmentGuide width={physW} height={physH} d={deltas} />}
-            {ghost && <GuideHud d={deltas} video={videoMode} />}
+            {ghost && <GuideHud d={deltas} video={videoMode} step={live?.ok && videoMode ? stepText(step) : null} />}
             {stamp.enabled && (
               <StampOverlay
                 lines={stampLines({ takenAt: now, note1: stamp.note1, note2: stamp.note2, showDate: stamp.showDate })}
@@ -731,6 +743,7 @@ export default function CaptureScreen() {
                     lensPicked.current = true;
                     setExtra((v) => Math.max(1, +(v / 1.1).toFixed(3)));
                     setLive(null);
+                    setStep(null);
                   }}
                   style={styles.lensBtn}>
                   <Text style={styles.lensText}>−</Text>
@@ -745,6 +758,7 @@ export default function CaptureScreen() {
                     setLens(k);
                     setExtra(1);
                     setLive(null);
+                    setStep(null);
                   }}
                   style={[styles.lensBtn, lens === k && { backgroundColor: '#FACC15' }]}>
                   <Text style={[styles.lensText, lens === k && { color: '#000' }]}>
@@ -759,6 +773,7 @@ export default function CaptureScreen() {
                     lensPicked.current = true;
                     setExtra((v) => Math.min(10, +(v * 1.1).toFixed(3)));
                     setLive(null);
+                    setStep(null);
                   }}
                   style={styles.lensBtn}>
                   <Text style={styles.lensText}>+</Text>

@@ -99,7 +99,7 @@ export function allAligned(d: Deltas) {
 }
 
 /** Big, solid-coloured guidance band along the top of the frame. */
-export function GuideHud({ d, video = false }: { d: Deltas; video?: boolean }) {
+export function GuideHud({ d, video = false, step = null }: { d: Deltas; video?: boolean; step?: { text: string; ok: boolean } | null }) {
   const cells = deltaCells(d);
   return (
     <View style={styles.hud} pointerEvents="none">
@@ -118,6 +118,14 @@ export function GuideHud({ d, video = false }: { d: Deltas; video?: boolean }) {
           </View>
         ))}
       </View>
+      {step && (
+        <View style={[styles.step, { backgroundColor: step.ok ? 'rgba(21,128,61,0.95)' : 'rgba(29,78,216,0.95)' }]}>
+          <Text style={styles.stepText} numberOfLines={1} adjustsFontSizeToFit>
+            👣 {step.text}
+          </Text>
+          <Text style={styles.stepNote}>estimate</Text>
+        </View>
+      )}
       <Text style={styles.source}>
         {d.source === 'image' ? `📷 Image match${video ? ' (video)' : ''} · ${d.quality ?? 0}%` : '🧭 Compass & tilt sensors'}
       </Text>
@@ -164,6 +172,19 @@ export function AlignmentGuide({ width, height, d }: { width: number; height: nu
 }
 
 const styles = StyleSheet.create({
+  step: {
+    marginTop: 4,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+    maxWidth: '96%',
+  },
+  stepText: { color: '#fff', fontWeight: '800', fontSize: 15 },
+  stepNote: { color: 'rgba(255,255,255,0.75)', fontSize: 10 },
   hud: { position: 'absolute', top: 0, left: 0, right: 0, padding: 6, gap: 4, backgroundColor: 'rgba(0,0,0,0.55)' },
   cells: { flexDirection: 'row', gap: 6 },
   cell: { flex: 1, borderRadius: 8, paddingVertical: 4, paddingHorizontal: 4, alignItems: 'center' },
