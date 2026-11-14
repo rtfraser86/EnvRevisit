@@ -28,6 +28,8 @@ export type Station = {
   roll: number | null; // horizon tilt relative to the shot's frame, degrees (+ clockwise)
   orientation: 'portrait' | 'landscape' | null;
   show_stamps?: number; // 0/1 — show note/date stamps over this station's photos
+  /** JSON array of areas left out of the change map, [{x, y, w, h}] as fractions of the reference view. */
+  change_mask?: string | null;
   notes: string | null;
   created: number;
 };
@@ -58,11 +60,26 @@ export type Capture = {
   markers?: string | null;
   /** Lens used for an in-app photo. */
   lens?: LensKind | null;
+  /** Extra zoom on top of the lens for an in-app photo (1 = none). */
+  zoom?: number | null;
   is_reference: number; // 0/1
 };
 
 export type LensKind = 'ultrawide' | 'wide' | 'tele';
 export type MarkerPt = { x: number; y: number };
+export type MaskRect = { x: number; y: number; w: number; h: number };
+
+export function parseMask(st: Pick<Station, 'change_mask'> | null | undefined): MaskRect[] {
+  if (!st?.change_mask) return [];
+  try {
+    const v = JSON.parse(st.change_mask);
+    return Array.isArray(v)
+      ? v.filter((r) => r && [r.x, r.y, r.w, r.h].every((n) => typeof n === 'number' && isFinite(n)))
+      : [];
+  } catch {
+    return [];
+  }
+}
 
 export function parseMarkers(cap: Pick<Capture, 'markers'> | null | undefined): MarkerPt[] {
   if (!cap?.markers) return [];
@@ -158,6 +175,9 @@ export function getDb() {
         ['captures', 'lens', 'TEXT'],
         // v0.6: 1 when the photo was aligned by hand with markers (kept on Re-align)
         ['captures', 'align_manual', 'INTEGER NOT NULL DEFAULT 0'],
+        // v0.7: in-between zoom, change-map mask
+        ['captures', 'zoom', 'REAL'],
+        ['stations', 'change_mask', 'TEXT'],
       ];
       for (const [table, col, type] of addCols) {
         const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
@@ -259,11 +279,11 @@ export async function listStations(): Promise<StationWithStats[]> {
 export async function addCapture(c: Omit<Capture, 'id'>): Promise<number> {
   const db = await getDb();
   const r = await db.runAsync(
-    `INSERT INTO captures (station_id, uri, source, taken_at, lat, lon, accuracy, heading, pitch, roll, width, height, orientation, note1, note2, stamp_date, lens, is_reference)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO captures (station_id, uri, source, taken_at, lat, lon, accuracy, heading, pitch, roll, width, height, orientation, note1, note2, stamp_date, lens, zoom, is_reference)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     c.station_id, c.uri, c.source, c.taken_at, c.lat, c.lon, c.accuracy,
     c.heading, c.pitch, c.roll, c.width, c.height, c.orientation,
-    c.note1 ?? null, c.note2 ?? null, c.stamp_date ?? 0, c.lens ?? null, c.is_reference
+    c.note1 ?? null, c.note2 ?? null, c.stamp_date ?? 0, c.lens ?? null, c.zoom ?? null, c.is_reference
   );
   return r.lastInsertRowId;
 }

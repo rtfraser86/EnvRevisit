@@ -66,6 +66,8 @@ import {
   smoothMatch,
   stopVideoMatching,
   videoMatchAvailable,
+  cameraZoomRange,
+  zoomPropFor,
   type LiveMatch,
 } from '@/lib/align';
 import { orientationOf, readPose } from '@/lib/library';
@@ -131,6 +133,8 @@ export default function CaptureScreen() {
   const snapResolve = useRef<((uri: string | null) => void) | null>(null);
   const [lenses, setLenses] = useState<Partial<Record<LensKind, string>>>({});
   const [lens, setLens] = useState<LensKind>('wide');
+  const [extra, setExtra] = useState(1); // in-between zoom on top of the lens (1 = none)
+  const [zoomRange, setZoomRange] = useState<{ min: number; max: number } | null>(null);
   const [focused, setFocused] = useState(true);
   const [videoMode, setVideoMode] = useState(false);
   const holdRef = useRef<'portrait' | 'cw' | 'ccw'>('portrait');
@@ -231,22 +235,46 @@ export default function CaptureScreen() {
 
   // Match the lens to the ghost photo (unless a lens was chosen by hand for this session).
   const ghostLens = ghost?.lens ?? null;
+  const ghostZoom = ghost?.zoom ?? null;
   const ghostLibraryUri = ghost?.source === 'library' ? ghost.uri : null;
   useEffect(() => {
     if (lensPicked.current || !ghostId) return;
     let cancelled = false;
     (async () => {
-      let want: LensKind | null = ghostLens;
-      if (!want && ghostLibraryUri) {
+      // The ghost's 35 mm-equivalent focal length, if known.
+      let ghostF: number | null = ghostLens ? LENS[ghostLens].f35 * (ghostZoom ?? 1) : null;
+      if (ghostF == null && ghostLibraryUri) {
         const pose = await readPose(ghostLibraryUri);
-        if (pose.focalLength35) want = kindFromFocal(pose.focalLength35);
+        ghostF = pose.focalLength35 ?? null;
       }
-      if (!cancelled && want && lenses[want]) setLens(want);
+      if (cancelled || ghostF == null) return;
+      // Longest lens that isn't longer than the ghost's, then zoom in the rest of the way.
+      const have = LENS_ORDER.filter((k) => k === 'wide' || lenses[k]);
+      const fits = have.filter((k) => LENS[k].f35 <= ghostF * 1.08);
+      const want = fits.length ? fits[fits.length - 1] : kindFromFocal(ghostF);
+      if (!have.includes(want)) return;
+      setLens(want);
+      const rest = ghostF / LENS[want].f35;
+      setExtra(rest > 1.08 ? Math.min(10, rest) : 1);
     })();
     return () => {
       cancelled = true;
     };
-  }, [ghostId, ghostLens, ghostLibraryUri, lenses]);
+  }, [ghostId, ghostLens, ghostZoom, ghostLibraryUri, lenses]);
+
+  // How far the current camera can zoom (needed to set in-between zoom levels exactly).
+  useEffect(() => {
+    if (!ready || !focused) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      const r = await cameraZoomRange();
+      if (!cancelled) setZoomRange(r);
+    }, 700);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [ready, focused, lens]);
 
   const applyLenses = (list: LensInfo[] | undefined) => {
     const found: Partial<Record<LensKind, string>> = {};
@@ -410,7 +438,8 @@ export default function CaptureScreen() {
   const physH = sideways ? boxW : boxH;
   const physRotate = att.hold === 'cw' ? '90deg' : att.hold === 'ccw' ? '-90deg' : '0deg';
   const mismatch = !!ghost && refShot !== shot;
-  const f35 = LENS[lens].f35;
+  const applied = zoomRange ? extra : 1;
+  const f35 = LENS[lens].f35 * applied;
   useEffect(() => {
     fovRef.current = fovFor(refShot === 'landscape', f35);
   }, [refShot, f35]);
@@ -501,6 +530,7 @@ export default function CaptureScreen() {
         note2: stamp.enabled ? stamp.note2.trim() || null : null,
         stamp_date: stamp.enabled && stamp.showDate ? 1 : 0,
         lens,
+        zoom: applied > 1.001 ? applied : null,
         is_reference: first ? 1 : 0,
       });
       if (first) {
@@ -595,6 +625,7 @@ export default function CaptureScreen() {
             active={focused}
             animateShutter={false}
             selectedLens={lens === 'wide' ? undefined : lenses[lens]}
+            zoom={zoomPropFor(extra, zoomRange)}
             onAvailableLensesChanged={(e: { lenses: LensInfo[] }) => applyLenses(e.lenses)}
             responsiveOrientationWhenOrientationLocked
             onCameraReady={() => {
@@ -691,21 +722,48 @@ export default function CaptureScreen() {
             )}
           </View>
 
-          {LENS_ORDER.filter((k) => lenses[k]).length > 1 && (
+          {(LENS_ORDER.filter((k) => lenses[k]).length > 1 || !!zoomRange) && (
             <View style={styles.lensRow} pointerEvents="box-none">
-              {LENS_ORDER.filter((k) => lenses[k]).map((k) => (
+              {!!zoomRange && (
+                <Pressable
+                  hitSlop={6}
+                  onPress={() => {
+                    lensPicked.current = true;
+                    setExtra((v) => Math.max(1, +(v / 1.1).toFixed(3)));
+                    setLive(null);
+                  }}
+                  style={styles.lensBtn}>
+                  <Text style={styles.lensText}>−</Text>
+                </Pressable>
+              )}
+              {LENS_ORDER.filter((k) => lenses[k] || k === lens).map((k) => (
                 <Pressable
                   key={k}
                   hitSlop={6}
                   onPress={() => {
                     lensPicked.current = true;
                     setLens(k);
+                    setExtra(1);
                     setLive(null);
                   }}
                   style={[styles.lensBtn, lens === k && { backgroundColor: '#FACC15' }]}>
-                  <Text style={[styles.lensText, lens === k && { color: '#000' }]}>{LENS[k].label}</Text>
+                  <Text style={[styles.lensText, lens === k && { color: '#000' }]}>
+                    {lens === k && applied > 1.001 ? `${((LENS[k].f35 * applied) / 26).toFixed(1)}×` : LENS[k].label}
+                  </Text>
                 </Pressable>
               ))}
+              {!!zoomRange && (
+                <Pressable
+                  hitSlop={6}
+                  onPress={() => {
+                    lensPicked.current = true;
+                    setExtra((v) => Math.min(10, +(v * 1.1).toFixed(3)));
+                    setLive(null);
+                  }}
+                  style={styles.lensBtn}>
+                  <Text style={styles.lensText}>+</Text>
+                </Pressable>
+              )}
             </View>
           )}
           {flash && <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(255,255,255,0.7)' }]} />}

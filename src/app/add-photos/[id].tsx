@@ -8,14 +8,16 @@ import { addCapture, getStation, listCaptures, photosInBox, type PhotoRow, type 
 import { bbox, distanceM, formatDistance } from '@/lib/geo';
 import { orientationOf, readPose } from '@/lib/library';
 
-const RADII = [15, 40, 100, 250];
+const RADII = [15, 40, 100, 250, 1000];
+type Sort = 'near' | 'old' | 'new';
 
 export default function AddPhotos() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const sid = Number(id);
   const c = useColors();
   const [station, setStation] = useState<Station | null>(null);
-  const [radius, setRadius] = useState(40);
+  const [radius, setRadius] = useState(100);
+  const [sort, setSort] = useState<Sort>('near');
   const [candidates, setCandidates] = useState<(PhotoRow & { d: number })[]>([]);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -33,10 +35,17 @@ export default function AddPhotos() {
           .filter((p) => !existing.has(p.id))
           .map((p) => ({ ...p, d: distanceM(center, { latitude: p.lat, longitude: p.lon }) }))
           .filter((p) => p.d <= radius)
-          .sort((a, b) => a.created - b.created)
       );
     })();
   }, [sid, radius]);
+
+  const sorted = useMemo(
+    () =>
+      [...candidates].sort((a, b) =>
+        sort === 'near' ? a.d - b.d || a.created - b.created : sort === 'old' ? a.created - b.created : b.created - a.created
+      ),
+    [candidates, sort]
+  );
 
   const toggle = (pid: string) =>
     setPicked((s) => {
@@ -77,20 +86,30 @@ export default function AddPhotos() {
         <Text style={{ color: c.muted }}>
           Camera-roll photos taken near “{station?.name}”. Pick the ones that show the same view to add them to the time series.
         </Text>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
+        <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <Text style={{ color: c.muted, fontSize: 12, width: 52 }}>Within</Text>
           {RADII.map((r) => (
-            <Pill key={r} label={`${r} m`} active={r === radius} onPress={() => setRadius(r)} />
+            <Pill key={r} label={r >= 1000 ? `${r / 1000} km` : `${r} m`} active={r === radius} onPress={() => setRadius(r)} />
           ))}
         </View>
+        <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <Text style={{ color: c.muted, fontSize: 12, width: 52 }}>Sort</Text>
+          <Pill label="Nearest first" active={sort === 'near'} onPress={() => setSort('near')} />
+          <Pill label="Oldest" active={sort === 'old'} onPress={() => setSort('old')} />
+          <Pill label="Newest" active={sort === 'new'} onPress={() => setSort('new')} />
+        </View>
+        <Text style={{ color: c.muted, fontSize: 12 }}>
+          {candidates.length} photo{candidates.length === 1 ? '' : 's'} · distance from the station to where each photo was taken (GPS in the photo).
+        </Text>
       </View>
     ),
-    [c.muted, station?.name, radius]
+    [c.muted, station?.name, radius, sort, candidates.length]
   );
 
   return (
     <View style={{ flex: 1, backgroundColor: c.bg }}>
       <FlatList
-        data={candidates}
+        data={sorted}
         numColumns={3}
         keyExtractor={(p) => p.id}
         contentContainerStyle={{ padding: 10, paddingBottom: 100 }}

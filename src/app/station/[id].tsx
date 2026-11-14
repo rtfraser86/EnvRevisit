@@ -195,16 +195,15 @@ export default function StationScreen() {
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: c.bg }} contentContainerStyle={{ padding: 14, gap: 14 }}>
-      <Stack.Screen
-        options={{
-          title: station.name,
-          headerRight: () => (
-            <Pressable onPress={rename} hitSlop={10}>
-              <Text style={{ color: c.accent, fontWeight: '600' }}>Rename</Text>
-            </Pressable>
-          ),
-        }}
-      />
+      <Stack.Screen options={{ title: 'Station' }} />
+      <View style={styles.nameRow}>
+        <Text style={{ color: c.text, fontSize: 22, fontWeight: '800', flex: 1 }} numberOfLines={2}>
+          {station.name}
+        </Text>
+        <Pressable onPress={rename} hitSlop={10} style={[styles.renameBtn, { borderColor: c.line }]}>
+          <Text style={{ color: c.accent, fontWeight: '700' }}>✎ Rename</Text>
+        </Pressable>
+      </View>
       {ref && (
         <Pressable onPress={() => router.push(`/timeline/${sid}`)}>
           <Image source={{ uri: ref.uri }} style={{ width: '100%', aspectRatio: aspect, borderRadius: 12 }} contentFit="cover" />
@@ -349,6 +348,8 @@ export default function StationScreen() {
 }
 
 const styles = StyleSheet.create({
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  renameBtn: { borderWidth: 1, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6 },
   sectionHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   cell: { width: '31.5%' },

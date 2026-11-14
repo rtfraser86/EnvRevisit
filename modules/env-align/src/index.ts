@@ -42,6 +42,11 @@ type EnvAlignModule = {
   /** Registers the newest camera video frame against the ghost. reason 'no-camera' = not attached. */
   liveMatch?(refUri: string, hold: 'portrait' | 'cw' | 'ccw', workLong: number): Promise<RegisterResult>;
   liveStop?(): Promise<boolean>;
+  // Added in native version 3.
+  /** Change map ignoring the given areas (fractions of the frame, origin top-left). changed = share of the compared area. */
+  changeMapMasked?(aUri: string, bUri: string, outUri: string, long: number, rects: number[][]): Promise<ChangeMapResult>;
+  /** Zoom range of the camera expo-camera is using: zoom prop z gives factor min·(max/min)^z. */
+  zoomRange?(): Promise<{ ok: true; min: number; max: number; device: string } | Fail>;
 };
 
 /** null in Expo Go (the native module only exists in the EnvRevisit build). */

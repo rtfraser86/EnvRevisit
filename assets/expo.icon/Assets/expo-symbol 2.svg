@@ -1,3 +1,12 @@
 <svg width="652" height="606" viewBox="0 0 652 606" fill="none" xmlns="http://www.w3.org/2000/svg">
-<path d="M353.554 0H298.446C273.006 0 249.684 14.6347 237.962 37.9539L4.37994 502.646C-1.04325 513.435 -1.45067 526.178 3.2716 537.313L22.6123 582.918C34.6475 611.297 72.5404 614.156 88.4414 587.885L309.863 222.063C313.34 216.317 319.439 212.826 326 212.826C332.561 212.826 338.659 216.317 342.137 222.063L563.559 587.885C579.46 614.156 617.352 611.297 629.388 582.918L648.728 537.313C653.451 526.178 653.043 513.435 647.62 502.646L414.038 37.9539C402.316 14.6347 378.994 0 353.554 0Z" fill="white"/>
+<!-- ghost frame (earlier photo), offset -->
+<rect x="96" y="70" width="500" height="420" rx="34" stroke="white" stroke-opacity="0.45" stroke-width="22" stroke-dasharray="46 30"/>
+<!-- viewfinder corners (the new photo) -->
+<path d="M40 180 V96 Q40 40 96 40 H180" stroke="white" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M472 40 H556 Q612 40 612 96 V180" stroke="white" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M40 426 V510 Q40 566 96 566 H180" stroke="white" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M612 426 V510 Q612 566 556 566 H472" stroke="white" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+<!-- landscape: ridge and a tree -->
+<path d="M130 452 L250 290 L318 372 L388 262 L522 452 Z" fill="white"/>
+<circle cx="452" cy="176" r="44" fill="white"/>
 </svg>

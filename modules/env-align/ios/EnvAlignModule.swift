@@ -58,6 +58,16 @@ public class EnvAlignModule: Module {
       EnvLive.shared.stop()
       return true
     }
+
+    // Change map that leaves out masked areas (rects: [x, y, w, h] as fractions, origin top-left).
+    AsyncFunction("changeMapMasked") { (aUri: String, bUri: String, outUri: String, long: Double, rects: [[Double]]) -> [String: Any] in
+      return EnvMedia.changeMap(aUri: aUri, bUri: bUri, outUri: outUri, long: CGFloat(long), mask: rects)
+    }
+
+    // The camera's zoom range, so in-between zoom levels can be set exactly.
+    AsyncFunction("zoomRange") { () -> [String: Any] in
+      return EnvLive.shared.zoomRange()
+    }
   }
 }
 

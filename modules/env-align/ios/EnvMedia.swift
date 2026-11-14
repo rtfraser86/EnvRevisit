@@ -16,7 +16,7 @@ enum EnvMedia {
   /// Compares two photos that are already aligned and writes a PNG that is white where they
   /// differ, with alpha = how strongly. Overall brightness differences are evened out first and
   /// black borders (areas a warped photo doesn't cover) are ignored.
-  static func changeMap(aUri: String, bUri: String, outUri: String, long: CGFloat) -> [String: Any] {
+  static func changeMap(aUri: String, bUri: String, outUri: String, long: CGFloat, mask: [[Double]] = []) -> [String: Any] {
     guard let aImg = EnvAligner.load(aUri) else { return fail("Could not read the first photo") }
     guard let bImg = EnvAligner.load(bUri) else { return fail("Could not read the second photo") }
     let size = EnvAligner.fit(aImg.size, long: long)
@@ -56,9 +56,23 @@ enum EnvMedia {
     let a = gray(aRaw, brightness: 0)
     let b = gray(bRaw, brightness: max(-0.5, min(0.5, meanA - meanB)))
 
+    // Where change is measured: both photos have content and the user hasn't masked it out.
+    var valid = coverage(aRaw).applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: coverage(bRaw)])
+    if !mask.isEmpty {
+      var keep = CIImage(color: CIColor(red: 1, green: 1, blue: 1)).cropped(to: rect)
+      for r in mask where r.count == 4 {
+        // Fractions with origin top-left → CoreImage pixels with origin bottom-left.
+        let w = CGFloat(r[2]) * size.width
+        let h = CGFloat(r[3]) * size.height
+        let x = CGFloat(r[0]) * size.width
+        let y = size.height - CGFloat(r[1]) * size.height - h
+        let hole = CIImage(color: CIColor(red: 0, green: 0, blue: 0)).cropped(to: CGRect(x: x, y: y, width: w, height: h))
+        keep = hole.composited(over: keep).cropped(to: rect)
+      }
+      valid = valid.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: keep]).cropped(to: rect)
+    }
     var diff = a.applyingFilter("CIDifferenceBlendMode", parameters: [kCIInputBackgroundImageKey: b]).cropped(to: rect)
-    diff = diff.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: coverage(aRaw)])
-    diff = diff.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: coverage(bRaw)])
+    diff = diff.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: valid]).cropped(to: rect)
     // Ignore small differences (noise, slight misalignment) and stretch the rest: (d − 0.07) × 5.
     let gain: CGFloat = 5
     let bias: CGFloat = -0.35
@@ -72,7 +86,8 @@ enum EnvMedia {
       .applyingFilter("CIColorClamp")
       .cropped(to: rect)
 
-    let changed = mean(diff, rect: rect)
+    // Share of the compared area (not of the whole frame) that changed.
+    let changed = min(1, mean(diff, rect: rect) / max(0.01, mean(valid, rect: rect)))
     let map = diff.applyingFilter("CIMaskToAlpha").cropped(to: rect)
     guard let png = EnvAligner.ciContext.pngRepresentation(
       of: map, format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB(), options: [:]) else {

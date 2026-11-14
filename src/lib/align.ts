@@ -14,7 +14,7 @@ import { Directory, File, Paths } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { Asset } from 'expo-media-library';
 
-import { getReference, listCaptures, parseMarkers, setAlignment, type Capture } from './db';
+import { getReference, listCaptures, parseMarkers, setAlignment, type Capture, type MaskRect } from './db';
 import { guidanceFromHomography, plausibleGuidance, type ImageGuidance } from './live-match';
 import { fitFromPairs } from './tiepoints';
 
@@ -283,13 +283,17 @@ export async function alignByMarkers(stationId: number, captureId: number): Prom
 export type ChangeMap = { ok: true; uri: string; changed: number } | { ok: false; reason: string };
 
 /** White-on-transparent map of where two aligned photos differ (tint it in the UI). */
-export async function changeMapFor(a: Capture, b: Capture): Promise<ChangeMap> {
+export async function changeMapFor(a: Capture, b: Capture, mask: MaskRect[] = []): Promise<ChangeMap> {
   if (!EnvAlign?.changeMap) return { ok: false, reason: NEEDS_REBUILD };
+  if (mask.length && !EnvAlign.changeMapMasked) return { ok: false, reason: NEEDS_REBUILD };
   if (!a.aligned_uri || !b.aligned_uri) {
     return { ok: false, reason: 'Both photos need to be aligned first (station screen → Align).' };
   }
   const out = new File(Paths.cache, `change_${a.id}_${b.id}_${Date.now()}.png`);
-  const res = await EnvAlign.changeMap(a.aligned_uri, b.aligned_uri, out.uri, 1280);
+  const res =
+    mask.length && EnvAlign.changeMapMasked
+      ? await EnvAlign.changeMapMasked(a.aligned_uri, b.aligned_uri, out.uri, 1280, mask.map((r) => [r.x, r.y, r.w, r.h]))
+      : await EnvAlign.changeMap(a.aligned_uri, b.aligned_uri, out.uri, 1280);
   return res.ok ? { ok: true, uri: res.uri, changed: res.changed } : res;
 }
 
@@ -325,3 +329,20 @@ export async function exportTimelapse(
 }
 
 export { deleteFile };
+
+/** Zoom range of the live camera (EnvRevisit build v3), or null. */
+export async function cameraZoomRange(): Promise<{ min: number; max: number } | null> {
+  if (!EnvAlign?.zoomRange) return null;
+  try {
+    const r = await EnvAlign.zoomRange();
+    return r.ok && r.max > r.min ? { min: r.min, max: r.max } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** expo-camera's zoom prop (0–1) for an extra magnification on top of the lens. */
+export function zoomPropFor(extra: number, range: { min: number; max: number } | null): number {
+  if (!range || extra <= 1.001) return 0;
+  return Math.max(0, Math.min(1, Math.log(extra) / Math.log(range.max / range.min)));
+}

@@ -101,6 +101,31 @@ final class EnvLive: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     lock.unlock()
   }
 
+  /// expo-camera sets videoZoomFactor = min · (max / min)^zoom, where min is 1 for a single lens and
+  /// the wide lens's switch-over factor on a virtual multi-lens camera.
+  func zoomRange() -> [String: Any] {
+    guard let s = findSession() else { return ["ok": false, "reason": "no-camera"] }
+    var device: AVCaptureDevice?
+    for input in s.inputs {
+      if let d = input as? AVCaptureDeviceInput, d.device.hasMediaType(.video) {
+        device = d.device
+        break
+      }
+    }
+    guard let d = device else { return ["ok": false, "reason": "no-camera"] }
+    var minFactor: CGFloat = 1
+    if d.constituentDevices.contains(where: { $0.deviceType == .builtInUltraWideCamera }),
+       let first = d.virtualDeviceSwitchOverVideoZoomFactors.first {
+      minFactor = CGFloat(truncating: first)
+    }
+    return [
+      "ok": true,
+      "min": Double(minFactor),
+      "max": Double(d.activeFormat.videoMaxZoomFactor),
+      "device": d.deviceType.rawValue,
+    ]
+  }
+
   func stop() {
     stateLock.lock()
     defer { stateLock.unlock() }
